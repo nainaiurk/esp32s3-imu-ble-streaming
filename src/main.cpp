@@ -5,25 +5,55 @@
 #include "ble_service.h"
 #include "tasks.h"
 
+// Forward declaration for BLE callbacks
+extern EventGroupHandle_t taskEventGroup;
+
+// BLE server callbacks to update task synchronization
+class CustomBLEServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) override {
+    Serial.println("[BLE] Client connected");
+    xEventGroupSetBits(taskEventGroup, BLE_CONNECTED_BIT);
+  }
+
+  void onDisconnect(NimBLEServer* pServer) override {
+    Serial.println("[BLE] Client disconnected");
+    xEventGroupClearBits(taskEventGroup, BLE_CONNECTED_BIT);
+  }
+};
+
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starting ESP32-S3 IMU BLE System...");
-
-  // Initialize IMU sensor
+  delay(1000);  // Give serial time to initialize
+  
+  Serial.println("\n========================================");
+  Serial.println("ESP32-S3 IMU BLE SD Card RTOS System");
+  Serial.println("========================================\n");
+  
+  // Initialize hardware
+  Serial.println("[Setup] Initializing MPU6050...");
   initMPU6050();
-
-  // Initialize feature processing modules
+  
+  Serial.println("[Setup] Initializing feature processing...");
   initFeatureProcessing();
-
-  // Initialize BLE service
+  
+  Serial.println("[Setup] Initializing BLE service...");
   initBLEService();
-
-  // Initialize and start FreeRTOS tasks
+  
+  // Set BLE callbacks for connection events
+  NimBLEServer* pServer = NimBLEDevice::getServer();
+  if (pServer) {
+    pServer->setCallbacks(new CustomBLEServerCallbacks());
+  }
+  
+  // Initialize RTOS tasks, queues, and event groups
+  Serial.println("[Setup] Initializing RTOS tasks...");
   initTasks();
+  
+  Serial.println("[Setup] System ready - all tasks running\n");
 }
 
 void loop() {
-  // Main loop is minimal - all work done in FreeRTOS tasks
-  // Handle any non-time-critical operations here if needed
-  vTaskDelay(pdMS_TO_TICKS(1000));  // Yield to other tasks
+  // FreeRTOS handles task scheduling
+  // This loop just yields to allow other tasks to run
+  vTaskDelay(pdMS_TO_TICKS(1000));
 }

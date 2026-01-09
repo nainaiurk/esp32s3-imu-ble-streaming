@@ -35,4 +35,13 @@
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
+// SD Card configuration
+#define SD_MMC_CLK_PIN    36   // Clock
+#define SD_MMC_CMD_PIN    35   // Command
+#define SD_MMC_D0_PIN     37   // Data 0
+#define SD_MMC_D1_PIN     -1   // Data 1 (not used, 1-bit mode)
+#define SD_MMC_D2_PIN     -1   // Data 2 (not used, 1-bit mode)
+#define SD_MMC_D3_PIN     -1   // Data 3 (pulled up externally)
+#define SD_MMC_MAX_FREQ   40000000  // 40 MHz for SD_MMC
+
 #endif
