@@ -10,6 +10,9 @@
 ImuPacket imuPacket;
 FeaturePacket featurePacket;
 
+// Jitter tracking for IMU task
+static volatile int32_t imuMaxJitterTicks = 0;
+
 // Mutexes for thread-safe access
 SemaphoreHandle_t imuDataMutex;
 SemaphoreHandle_t featureDataMutex;
@@ -23,6 +26,15 @@ void imuSamplingTask(void* parameter) {
   const TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
 
   while (true) {
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    
+    TickType_t now = xTaskGetTickCount();
+    int32_t jitter = (int32_t)(now - xLastWakeTime);
+    
+    if (abs(jitter) > imuMaxJitterTicks) {
+      imuMaxJitterTicks = abs(jitter);
+    }
+    
     int16_t rawAccel[3], rawGyro[3], rawTemp;
     
     if (readIMUData(rawAccel, rawGyro, rawTemp)) {
@@ -38,8 +50,6 @@ void imuSamplingTask(void* parameter) {
         xSemaphoreGive(imuDataMutex);
       }
     }
-
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
 
@@ -90,8 +100,15 @@ void bleTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
   uint32_t bleNotifyCount = 0;
+  uint32_t loopCount = 0;
 
   while (true) {
+    loopCount++;
+    
+    if (loopCount % 100 == 0) {  // Print status every 10 seconds
+      Serial.printf("[BLE Task] Loop=%u Connected=%d\n", loopCount, isBLEConnected());
+    }
+    
     if (isBLEConnected()) {
       FeaturePacket packet;
       
@@ -105,10 +122,15 @@ void bleTask(void* parameter) {
           pChar->notify();
           
           if (++bleNotifyCount % 10 == 0) {
-            DEBUG_LOG("[BLE] Sent: Steps=%u, RMS=%d\n",
-              packet.stepCount, packet.rms);
+            Serial.printf("[BLE] Sent: T=%u Steps=%u RMS=%d Pitch=%.1f Roll=%.1f\n",
+              packet.timestamp, packet.stepCount, packet.rms,
+              packet.pitch / 100.0f, packet.roll / 100.0f);
           }
+        } else {
+          Serial.println("[BLE] ERROR: pChar is NULL");
         }
+      } else {
+        Serial.println("[BLE] ERROR: Failed to acquire featureDataMutex");
       }
     }
 
@@ -160,6 +182,11 @@ void imuDebugTask(void* parameter) {
     if (xSemaphoreTake(imuDataMutex, pdMS_TO_TICKS(5))) {
       debugData = imuPacket;
       xSemaphoreGive(imuDataMutex);
+      
+      int32_t jitterTicks = imuMaxJitterTicks;
+      int32_t jitterMs = jitterTicks * portTICK_PERIOD_MS;
+      
+      Serial.printf("[IMU] Max jitter: %ld ms\n", jitterMs);
       
       if (DEBUG_LOG_ENABLE) {
         DEBUG_LOG("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
