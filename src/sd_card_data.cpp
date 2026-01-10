@@ -2,11 +2,45 @@
 #include "config.h"
 #include <Arduino.h>
 #include <SD_MMC.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
 
-//SD Card State Management
+// ============ Ring Buffer Configuration ============
+#define SD_RING_BUFFER_SIZE 512  // 512 packets = ~10 sec buffer at 50 Hz
+
+// ============ Ring Buffer Implementation ============
+typedef struct {
+  FeaturePacket* buffer;
+  uint32_t head;           // Write pointer
+  uint32_t tail;           // Read pointer
+  uint32_t size;           // Current number of packets
+  uint32_t capacity;       // Maximum capacity
+  SDBackpressurePolicy policy;
+  SDRingBufferStats stats;
+} SDRingBuffer;
+
+static SDRingBuffer sdRingBuffer = {
+  .buffer = NULL,
+  .head = 0,
+  .tail = 0,
+  .size = 0,
+  .capacity = SD_RING_BUFFER_SIZE,
+  .policy = SD_BACKPRESSURE_DROP_OLDEST,
+  .stats = {
+    .totalEnqueued = 0,
+    .totalDequeued = 0,
+    .peakQueueDepth = 0,
+    .droppedPackets = 0
+  }
+};
+
+// Ring buffer mutex for thread safety (Feature Task → Enqueue, SD Task → Dequeue)
+static SemaphoreHandle_t sdRingBufferMutex = NULL;
+
+// ============ SD Card State Management ============
 
 static FILE* sdLogFile = NULL;
 static char sdLogFileName[128];
@@ -23,7 +57,153 @@ static uint32_t sdPacketsInCurrentFile = 0;
 static const uint32_t MAX_PACKETS_PER_FILE = 60000;  // ~10 min at 50 Hz
 static uint8_t sdWriteErrorCount = 0;
 
-// -------------------Generate Log Filename-------------------
+// ============ Ring Buffer Operations ============
+
+/* Initialize ring buffer (called by sd_init) */
+static bool sd_ringBuffer_init() {
+  if (sdRingBuffer.buffer != NULL) {
+    return true;  // Already initialized
+  }
+  
+  sdRingBuffer.buffer = (FeaturePacket*)malloc(
+    sdRingBuffer.capacity * sizeof(FeaturePacket));
+  
+  if (!sdRingBuffer.buffer) {
+    Serial.println("[RB] Failed to allocate ring buffer");
+    return false;
+  }
+  
+  // Create mutex for thread-safe access
+  if (sdRingBufferMutex == NULL) {
+    sdRingBufferMutex = xSemaphoreCreateMutex();
+    if (sdRingBufferMutex == NULL) {
+      Serial.println("[RB] Failed to create ring buffer mutex");
+      free(sdRingBuffer.buffer);
+      sdRingBuffer.buffer = NULL;
+      return false;
+    }
+  }
+  
+  sdRingBuffer.head = 0;
+  sdRingBuffer.tail = 0;
+  sdRingBuffer.size = 0;
+  memset(&sdRingBuffer.stats, 0, sizeof(SDRingBufferStats));
+  
+  Serial.printf("[RB] Initialized ring buffer: %u packets, %zu bytes\n",
+    sdRingBuffer.capacity,
+    sdRingBuffer.capacity * sizeof(FeaturePacket));
+  
+  return true;
+}
+
+/* Enqueue packet with backpressure handling */
+bool sd_enqueue(const FeaturePacket* packet) {
+  if (!sdRingBuffer.buffer || !sdRingBufferMutex) {
+    return false;  // Buffer or mutex not initialized
+  }
+  
+  // Acquire mutex with timeout
+  if (xSemaphoreTake(sdRingBufferMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    Serial.println("[RB] Mutex timeout in enqueue");
+    return false;
+  }
+  
+  bool enqueued = false;
+  
+  // Check if full
+  if (sdRingBuffer.size >= sdRingBuffer.capacity) {
+    // Apply backpressure policy
+    switch (sdRingBuffer.policy) {
+      case SD_BACKPRESSURE_DROP_OLDEST:
+        // Drop oldest (tail) packet
+        sdRingBuffer.tail = (sdRingBuffer.tail + 1) % sdRingBuffer.capacity;
+        sdRingBuffer.size--;
+        sdRingBuffer.stats.droppedPackets++;
+        Serial.printf("[RB] Dropped oldest packet (total: %u)\n",
+          sdRingBuffer.stats.droppedPackets);
+        // Fall through to enqueue new packet
+        enqueued = true;
+        break;
+      
+      case SD_BACKPRESSURE_DROP_NEWEST:
+        // Reject new packet
+        sdRingBuffer.stats.droppedPackets++;
+        Serial.printf("[RB] Rejected new packet (total: %u)\n",
+          sdRingBuffer.stats.droppedPackets);
+        enqueued = false;
+        break;
+      
+      default:
+        enqueued = false;
+        break;
+    }
+  } else {
+    enqueued = true;
+  }
+  
+  // Enqueue packet if not rejected
+  if (enqueued) {
+    sdRingBuffer.buffer[sdRingBuffer.head] = *packet;
+    sdRingBuffer.head = (sdRingBuffer.head + 1) % sdRingBuffer.capacity;
+    sdRingBuffer.size++;
+    sdRingBuffer.stats.totalEnqueued++;
+    
+    // Track peak depth
+    if (sdRingBuffer.size > sdRingBuffer.stats.peakQueueDepth) {
+      sdRingBuffer.stats.peakQueueDepth = sdRingBuffer.size;
+    }
+  }
+  
+  xSemaphoreGive(sdRingBufferMutex);
+  return enqueued;
+}
+
+/* Dequeue oldest packet */
+bool sd_dequeue(FeaturePacket* packet) {
+  if (!sdRingBuffer.buffer || !sdRingBufferMutex) {
+    return false;  // Buffer or mutex not initialized
+  }
+  
+  // Acquire mutex with timeout
+  if (xSemaphoreTake(sdRingBufferMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    Serial.println("[RB] Mutex timeout in dequeue");
+    return false;
+  }
+  
+  bool dequeued = false;
+  
+  if (sdRingBuffer.size > 0) {
+    *packet = sdRingBuffer.buffer[sdRingBuffer.tail];
+    sdRingBuffer.tail = (sdRingBuffer.tail + 1) % sdRingBuffer.capacity;
+    sdRingBuffer.size--;
+    sdRingBuffer.stats.totalDequeued++;
+    dequeued = true;
+  }
+  
+  xSemaphoreGive(sdRingBufferMutex);
+  return dequeued;
+}
+
+/* Get current queue depth */
+uint32_t sd_getRingBufferSize() {
+  return sdRingBuffer.size;
+}
+
+/* Get queue capacity */
+uint32_t sd_getRingBufferCapacity() {
+  return sdRingBuffer.capacity;
+}
+
+/* Set backpressure policy */
+void sd_setBackpressurePolicy(SDBackpressurePolicy p) {
+  sdRingBuffer.policy = p;
+  const char* policyNames[] = {
+    "DROP_OLDEST",
+    "DROP_NEWEST"
+  };
+  Serial.printf("[RB] Backpressure policy set to: %s\n", policyNames[p]);
+}
+
 void sd_getFileName(char* buffer, size_t bufferSize) {
   if (!buffer || bufferSize < 32) {
     return;
@@ -66,6 +246,11 @@ bool sd_init() {
   if (sdStatus.isInitialized) {
     Serial.println("[SD] Already initialized");
     return true;
+  }
+
+  // Initialize ring buffer first
+  if (!sd_ringBuffer_init()) {
+    return false;
   }
 
   // Initialize SD_MMC
@@ -134,12 +319,7 @@ bool sd_writePacket(const FeaturePacket* packet) {
   sdStatus.packetsWritten++;
   sdPacketsInCurrentFile++;
 
-  // Flush every 100 packets (~2 seconds at 50 Hz)
-  if (sdPacketsInCurrentFile % 100 == 0) {
-    sd_flush();
-  }
-
-  // Check if file rotation is needed
+  // Check if file rotation is needed (only explicit flush trigger)
   if (sdPacketsInCurrentFile >= MAX_PACKETS_PER_FILE) {
     if (!sd_rotateFile()) {
       sdStatus.isReady = false;
@@ -192,6 +372,8 @@ void sd_closeFile() {
 
 // -------------------Get SD Card Status-------------------
 SDCardStatus sd_getStatus() {
+  // Update buffer stats before returning
+  sdStatus.bufferStats = sdRingBuffer.stats;
   return sdStatus;
 }
 
@@ -231,5 +413,20 @@ void sd_printStatus() {
   
   uint64_t availSpace = sd_getAvailableSpace();
   Serial.printf("Available Space:  %llu MB\n", availSpace / (1024 * 1024));
-  Serial.println("=====================================\n");
+  
+  Serial.println("\n====== Ring Buffer Status ======");
+  Serial.printf("Current Depth:    %u / %u packets\n",
+    sdRingBuffer.size, sdRingBuffer.capacity);
+  Serial.printf("Total Enqueued:   %u\n", status.bufferStats.totalEnqueued);
+  Serial.printf("Total Dequeued:   %u\n", status.bufferStats.totalDequeued);
+  Serial.printf("Peak Depth:       %u packets\n", status.bufferStats.peakQueueDepth);
+  Serial.printf("Dropped Packets:  %u\n", status.bufferStats.droppedPackets);
+  
+  float utilizationPercent = (float)sdRingBuffer.size * 100.0f / sdRingBuffer.capacity;
+  Serial.printf("Current Util:     %.1f%%\n", utilizationPercent);
+  
+  const char* policyNames[] = {"DROP_OLDEST", "DROP_NEWEST"};
+  Serial.printf("Backpressure:     %s\n", policyNames[sdRingBuffer.policy]);
+  
+  Serial.println("================================\n");
 }

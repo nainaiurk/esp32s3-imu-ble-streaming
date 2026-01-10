@@ -17,10 +17,7 @@ SemaphoreHandle_t featureDataMutex;
 // Event group for inter-task synchronization
 EventGroupHandle_t taskEventGroup;
 
-// Queue for SD logging
-QueueHandle_t sdLogQueue;
-
-/* ---------- IMU Sampling Task (50 Hz) ---------- */
+// // ---------- IMU Sampling Task (50 Hz) ----------
 void imuSamplingTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
@@ -49,7 +46,7 @@ void imuSamplingTask(void* parameter) {
   }
 }
 
-/* ---------- Feature Computation Task (50 Hz) ---------- */
+// ---------- Feature Computation Task (50 Hz) ----------
 void featureComputationTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(FEATURE_UPDATE_PERIOD_MS);
@@ -85,8 +82,11 @@ void featureComputationTask(void* parameter) {
         xSemaphoreGive(featureDataMutex);
       }
       
-      // Queue feature packet for SD logging
-      queueFeatureForSD(&featurePacket);
+      // Enqueue feature packet to ring buffer for SD logging
+      if (!sd_enqueue(&featurePacket)) {
+        // Ring buffer backpressure applied (policy handles it)
+        // Packet either buffered, dropped, or blocked depending on policy
+      }
       
       // Signal that feature data is ready for BLE and SD tasks
       xEventGroupSetBits(taskEventGroup, FEATURE_READY_BIT);
@@ -106,7 +106,7 @@ void featureComputationTask(void* parameter) {
   }
 }
 
-/* ---------- BLE Task (10 Hz) ---------- */
+// ---------- BLE Task (10 Hz) ----------
 void bleTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
@@ -150,12 +150,11 @@ void bleTask(void* parameter) {
   }
 }
 
-/* ---------- SD Card Logging Task (buffered writes) ---------- */
+// ---------- SD Card Logging Task (buffered writes) ----------
 void sdLoggingTask(void* parameter) {
   FeaturePacket logPacket;
   uint32_t queueReceiveCount = 0;
 
-  // Initialize SD card
   if (!sd_init()) {
     Serial.println("[Task] SD initialization failed, task exiting");
     vTaskDelete(NULL);
@@ -164,11 +163,12 @@ void sdLoggingTask(void* parameter) {
 
   // Signal SD is ready
   xEventGroupSetBits(taskEventGroup, SD_READY_BIT);
-  Serial.println("[Task] SD Logging task started, queue listening...");
+  Serial.println("[Task] SD Logging task started, ring buffer listening...");
 
   while (true) {
-    // Receive feature packets from queue (wait up to 500ms)
-    if (xQueueReceive(sdLogQueue, &logPacket, pdMS_TO_TICKS(500))) {
+    // Dequeue feature packets from ring buffer
+    FeaturePacket logPacket;
+    if (sd_dequeue(&logPacket)) {
       queueReceiveCount++;
       
       // Write packet using SD module
@@ -189,48 +189,21 @@ void sdLoggingTask(void* parameter) {
           status.packetsWritten, status.filesCreated, status.writeErrors);
       }
     } else {
-      // Queue timeout - no data received for 500ms
-      // Periodically flush data to SD
+      // Queue timeout - no data received for 500ms, flush buffered data
       if (sd_isReady()) {
         sd_flush();
       }
     }
-
-    // Allow other tasks to run
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
-/* ---------- Utility Function: Queue Feature for SD Logging ---------- */
-void queueFeatureForSD(const FeaturePacket* packet) {
-  // Check if SD task is ready
-  EventBits_t bits = xEventGroupGetBits(taskEventGroup);
-  
-  if (bits & SD_READY_BIT) {
-    // Try to send to queue (non-blocking)
-    BaseType_t result = xQueueSendToBack(sdLogQueue, (void*)packet, 0);
-    
-    if (result != pdPASS) {
-      // Queue is full, signal buffer full condition
-      xEventGroupSetBits(taskEventGroup, BUFFER_FULL_BIT);
-      Serial.println("[Queue] SD logging queue is full!");
-    }
-  }
-}
-
-/* ---------- Initialize All Tasks, Queues, and Event Groups ---------- */
+// ---------- Initialize All Tasks and Event Groups ----------
 void initTasks() {
   // Create event group for inter-task synchronization
   taskEventGroup = xEventGroupCreate();
   if (!taskEventGroup) {
     Serial.println("Failed to create event group!");
-    return;
-  }
-
-  // Create queue for SD logging
-  sdLogQueue = xQueueCreate(SD_LOG_QUEUE_SIZE, sizeof(FeaturePacket));
-  if (!sdLogQueue) {
-    Serial.println("Failed to create SD logging queue!");
     return;
   }
 
@@ -243,62 +216,21 @@ void initTasks() {
     return;
   }
 
-  // Create FreeRTOS tasks with appropriate priorities and core affinity
+
+  xTaskCreatePinnedToCore(imuSamplingTask, "IMU_Task", 4096, NULL, 3, NULL, 1);
   
-  // Task 1: IMU sampling task (highest priority, core 1)
-  // Needs to run on precise intervals without interruption
-  xTaskCreatePinnedToCore(
-    imuSamplingTask,        // Task function
-    "IMU_Task",             // Task name
-    4096,                   // Stack size
-    NULL,                   // Parameter
-    3,                      // Priority (higher number = higher priority)
-    NULL,                   // Task handle
-    1                       // Core (1 = second core, usually reserved for non-BLE)
-  );
+  xTaskCreatePinnedToCore(featureComputationTask, "Feature_Task", 8192, NULL, 2, NULL, 1);
   
-  // Task 2: Feature computation task (medium priority, core 1)
-  // Depends on IMU data, feeds both BLE and SD tasks
-  xTaskCreatePinnedToCore(
-    featureComputationTask,
-    "Feature_Task",
-    8192,                   // Larger stack for feature processing
-    NULL,
-    2,                      // Medium priority
-    NULL,
-    1                       // Core 1
-  );
+  xTaskCreatePinnedToCore( bleTask, "BLE_Task", 4096, NULL, 1, NULL, 0);
   
-  // Task 3: BLE notification task (lower priority, core 0)
-  // Core 0 is typically reserved for BLE/WiFi stack
-  xTaskCreatePinnedToCore(
-    bleTask,
-    "BLE_Task",
-    4096,
-    NULL,
-    1,                      // Lower priority (non-critical notifications)
-    NULL,
-    0                       // Core 0 (BLE stack)
-  );
-  
-  // Task 4: SD card logging task (lowest priority, core 0)
-  // Can tolerate variable latency for buffered writes
-  xTaskCreatePinnedToCore(
-    sdLoggingTask,
-    "SD_Task",
-    8192,                   // Larger stack for file I/O
-    NULL,
-    0,                      // Lowest priority
-    NULL,
-    0                       // Core 0
-  );
+  xTaskCreatePinnedToCore(sdLoggingTask, "SD_Task", 8192, NULL, 0, NULL, 0);
 
   // Print task configuration
   Serial.println("\n========== RTOS Task Configuration ==========");
   Serial.printf("Task 1: IMU Sampling at %d Hz (20 ms period)\n", IMU_SAMPLE_RATE_HZ);
   Serial.printf("Task 2: Feature Computation at %d Hz\n", FEATURE_UPDATE_RATE_HZ);
   Serial.printf("Task 3: BLE Notifications at %d Hz\n", BLE_NOTIFY_RATE_HZ);
-  Serial.println("Task 4: SD Card Logging (buffered, file rotation enabled)");
-  Serial.printf("SD Queue: %d max packets\n", SD_LOG_QUEUE_SIZE);
+  Serial.println("Task 4: SD Card Logging (ring buffer, file rotation enabled)");
+  Serial.println("Ring Buffer: 512 max packets (~10 sec buffer at 50 Hz)");
   Serial.println("==========================================\n");
 }
