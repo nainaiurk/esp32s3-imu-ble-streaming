@@ -27,6 +27,7 @@ void imuSamplingTask(void* parameter);
 void featureComputationTask(void* parameter);
 void bleTask(void* parameter);
 void sdLoggingTask(void* parameter);
+void imuDebugTask(void* parameter);
 
 // Initialize all tasks and event groups
 void initTasks();

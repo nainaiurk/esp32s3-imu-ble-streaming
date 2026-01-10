@@ -79,13 +79,6 @@ void featureComputationTask(void* parameter) {
         
         sd_enqueue(&snapshot);
       }
-      
-      if (++updateCount % 50 == 0) {
-        DEBUG_LOG("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
-          localImuData.timestamp,
-          localImuData.ax, localImuData.ay, localImuData.az,
-          getPitch(), getRoll(), getStepCount());
-      }
     }
 
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -156,6 +149,30 @@ void sdLoggingTask(void* parameter) {
   }
 }
 
+// ---------- IMU Debug Task (1 Hz) ----------
+void imuDebugTask(void* parameter) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(1000);  // 1 Hz
+
+  while (true) {
+    ImuPacket debugData;
+    
+    if (xSemaphoreTake(imuDataMutex, pdMS_TO_TICKS(5))) {
+      debugData = imuPacket;
+      xSemaphoreGive(imuDataMutex);
+      
+      if (DEBUG_LOG_ENABLE) {
+        DEBUG_LOG("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
+          debugData.timestamp,
+          debugData.ax, debugData.ay, debugData.az,
+          getPitch(), getRoll(), getStepCount());
+      }
+    }
+
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+}
+
 // ---------- Initialize All Tasks and Event Groups ----------
 void initTasks() {
   taskEventGroup = xEventGroupCreate();
@@ -171,4 +188,5 @@ void initTasks() {
   xTaskCreatePinnedToCore(featureComputationTask, "Feature_Task", 8192, NULL, 2, NULL, 1);
   xTaskCreatePinnedToCore(bleTask, "BLE_Task", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(sdLoggingTask, "SD_Task", 8192, NULL, 0, NULL, 0);
+  xTaskCreatePinnedToCore(imuDebugTask, "Debug_Task", 2048, NULL, 0, NULL, 0);
 }
