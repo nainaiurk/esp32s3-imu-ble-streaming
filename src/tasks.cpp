@@ -11,7 +11,8 @@ ImuPacket imuPacket;
 FeaturePacket featurePacket;
 
 // Jitter tracking for IMU task
-static volatile int32_t imuMaxJitterTicks = 0;
+static volatile uint32_t imuMinPeriodUs = UINT32_MAX;
+static volatile uint32_t imuMaxPeriodUs = 0;
 
 // Mutexes for thread-safe access
 SemaphoreHandle_t imuDataMutex;
@@ -24,20 +25,28 @@ EventGroupHandle_t taskEventGroup;
 void imuSamplingTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
+  uint32_t lastSampleTimeUs = micros();
+  const uint32_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
 
   while (true) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
     
-    TickType_t now = xTaskGetTickCount();
-    int32_t jitter = (int32_t)(now - xLastWakeTime);
-    
-    if (abs(jitter) > imuMaxJitterTicks) {
-      imuMaxJitterTicks = abs(jitter);
-    }
-    
     int16_t rawAccel[3], rawGyro[3], rawTemp;
     
     if (readIMUData(rawAccel, rawGyro, rawTemp)) {
+      // Measure actual IMU sampling jitter in microseconds
+      uint32_t currentSampleTimeUs = micros();
+      uint32_t actualPeriodUs = currentSampleTimeUs - lastSampleTimeUs;
+      
+      if (actualPeriodUs < imuMinPeriodUs) {
+        imuMinPeriodUs = actualPeriodUs;
+      }
+      if (actualPeriodUs > imuMaxPeriodUs) {
+        imuMaxPeriodUs = actualPeriodUs;
+      }
+      
+      lastSampleTimeUs = currentSampleTimeUs;
+      
       if (xSemaphoreTake(imuDataMutex, pdMS_TO_TICKS(5))) {
         imuPacket.timestamp = millis();
         imuPacket.ax = rawAccel[0];
@@ -106,7 +115,7 @@ void bleTask(void* parameter) {
     loopCount++;
     
     if (loopCount % 100 == 0) {  // Print status every 10 seconds
-      Serial.printf("[BLE Task] Loop=%u Connected=%d\n", loopCount, isBLEConnected());
+      DEBUG_LOG("[BLE Task] Loop=%u Connected=%d\n", loopCount, isBLEConnected());
     }
     
     if (isBLEConnected()) {
@@ -122,15 +131,15 @@ void bleTask(void* parameter) {
           pChar->notify();
           
           if (++bleNotifyCount % 10 == 0) {
-            Serial.printf("[BLE] Sent: T=%u Steps=%u RMS=%d Pitch=%.1f Roll=%.1f\n",
+            DEBUG_LOG("[BLE] Sent: T=%u Steps=%u RMS=%d Pitch=%.1f Roll=%.1f\n",
               packet.timestamp, packet.stepCount, packet.rms,
               packet.pitch / 100.0f, packet.roll / 100.0f);
           }
         } else {
-          Serial.println("[BLE] ERROR: pChar is NULL");
+          DEBUG_LOG("[BLE] ERROR: pChar is NULL\n");
         }
       } else {
-        Serial.println("[BLE] ERROR: Failed to acquire featureDataMutex");
+        DEBUG_LOG("[BLE] ERROR: Failed to acquire featureDataMutex\n");
       }
     }
 
@@ -183,10 +192,20 @@ void imuDebugTask(void* parameter) {
       debugData = imuPacket;
       xSemaphoreGive(imuDataMutex);
       
-      int32_t jitterTicks = imuMaxJitterTicks;
-      int32_t jitterMs = jitterTicks * portTICK_PERIOD_MS;
+      int32_t minPeriodUs = imuMinPeriodUs;
+      int32_t maxPeriodUs = imuMaxPeriodUs;
       
-      Serial.printf("[IMU] Max jitter: %ld ms\n", jitterMs);
+      const int32_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
+      int32_t maxJitterUs = maxPeriodUs - expectedPeriodUs;
+      int32_t minJitterUs = minPeriodUs - expectedPeriodUs;
+      int32_t worstJitterUs = max(abs(maxJitterUs), abs(minJitterUs));
+      
+      Serial.printf("[IMU] Period min=%ld max=%ld | worst jitter=%ld µs\n", 
+        minPeriodUs, maxPeriodUs, worstJitterUs);
+      
+      // Reset for next measurement window
+      imuMinPeriodUs = UINT32_MAX;
+      imuMaxPeriodUs = 0;
       
       if (DEBUG_LOG_ENABLE) {
         DEBUG_LOG("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
