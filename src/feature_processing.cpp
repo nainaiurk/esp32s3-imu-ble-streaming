@@ -13,11 +13,12 @@ static int32_t prevDynMagSq = 0;
 static int32_t lastDynamicMagSq = 0;
 static uint32_t stepCount = 0;
 static uint32_t lastStepTime = 0;
+static const int32_t STEP_THRESHOLD_SQ = (int32_t)(STEP_THRESHOLD * STEP_THRESHOLD);
 
 // Orientation variables
 static float pitch = 0.0f;
 static float roll = 0.0f;
-static uint32_t lastOrientationUpdate = 0;
+static const float DT = 1.0f / FEATURE_UPDATE_RATE_HZ;
 
 void initFeatureProcessing() {
   accSqSum = 0;
@@ -28,7 +29,6 @@ void initFeatureProcessing() {
   stepCount = 0;
   lastStepTime = 0;
   pitch = roll = 0.0f;
-  lastOrientationUpdate = millis();
 }
 
 void updateRMS(int16_t ax, int16_t ay, int16_t az) {
@@ -48,20 +48,15 @@ float getRMSValue() {
 }
 
 void detectStep(int16_t ax, int16_t ay, int16_t az) {
-  // Convert to float
-  float fx = (float)ax;
-  float fy = (float)ay;
-  float fz = (float)az;
-  
   // Low-pass filter to estimate gravity (slowly adapts to orientation)
-  gravityX = GRAVITY_ALPHA * gravityX + (1.0f - GRAVITY_ALPHA) * fx;
-  gravityY = GRAVITY_ALPHA * gravityY + (1.0f - GRAVITY_ALPHA) * fy;
-  gravityZ = GRAVITY_ALPHA * gravityZ + (1.0f - GRAVITY_ALPHA) * fz;
+  gravityX = GRAVITY_ALPHA * gravityX + (1.0f - GRAVITY_ALPHA) * ax;
+  gravityY = GRAVITY_ALPHA * gravityY + (1.0f - GRAVITY_ALPHA) * ay;
+  gravityZ = GRAVITY_ALPHA * gravityZ + (1.0f - GRAVITY_ALPHA) * az;
   
   // Remove gravity to get dynamic (linear) acceleration
-  float dynX = fx - gravityX;
-  float dynY = fy - gravityY;
-  float dynZ = fz - gravityZ;
+  float dynX = ax - gravityX;
+  float dynY = ay - gravityY;
+  float dynZ = az - gravityZ;
   
   // Calculate magnitude squared of dynamic acceleration
   int32_t dynMagSq = (int32_t)(dynX*dynX + dynY*dynY + dynZ*dynZ);
@@ -71,15 +66,12 @@ void detectStep(int16_t ax, int16_t ay, int16_t az) {
   // Three-point peak detection: prev < last > current (local maximum)
   if (prevDynMagSq < lastDynamicMagSq &&
       lastDynamicMagSq > dynMagSq &&
-      lastDynamicMagSq > STEP_THRESHOLD*STEP_THRESHOLD &&
+      lastDynamicMagSq > STEP_THRESHOLD_SQ &&
       (now - lastStepTime) >= MIN_STEP_INTERVAL_MS) {
-
     stepCount++;
     lastStepTime = now;
-    
-    Serial.printf("Step #%u detected! Dynamic mag: %.1f\n", 
-                  stepCount, sqrt((float)lastDynamicMagSq));
   }
+  
   prevDynMagSq = lastDynamicMagSq;
   lastDynamicMagSq = dynMagSq;
 }
@@ -89,23 +81,12 @@ uint32_t getStepCount() {
 }
 
 void updateOrientation(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz) {
-  uint32_t now = millis();
-  float dt = (now - lastOrientationUpdate) / 1000.0f;  // Convert to seconds
-  lastOrientationUpdate = now;
-  
-  // Skip first iteration (dt invalid)
-  if (dt > 1.0f || dt <= 0.0f) {
-    dt = 0.02f;  // Default to 50Hz
-  }
-  
   // Convert accelerometer to g's
   float ax_g = ax / ACCEL_SCALE_8G;
   float ay_g = ay / ACCEL_SCALE_8G;
   float az_g = az / ACCEL_SCALE_8G;
   
   // Calculate pitch and roll from accelerometer (in degrees)
-  // accelPitch = atan2(ay, sqrt(ax^2 + az^2))
-  // accelRoll  = atan2(-ax, az)
   float accelPitch = atan2(ay_g, sqrt(ax_g*ax_g + az_g*az_g)) * 180.0f / PI;
   float accelRoll = atan2(-ax_g, az_g) * 180.0f / PI;
   
@@ -114,8 +95,8 @@ void updateOrientation(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t g
   float gy_dps = gy / GYRO_SCALE_500DPS;
   
   // Integrate gyro rates to get angles (gyro measures rotation rate)
-  float gyroPitch = pitch + gx_dps * dt;
-  float gyroRoll = roll - gy_dps * dt;  // Negative because of axis orientation
+  float gyroPitch = pitch + gx_dps * DT;
+  float gyroRoll = roll - gy_dps * DT;
   
   // Complementary filter: 98% gyro (short-term accuracy), 2% accel (long-term stability)
   pitch = COMPLEMENTARY_ALPHA * gyroPitch + (1.0f - COMPLEMENTARY_ALPHA) * accelPitch;

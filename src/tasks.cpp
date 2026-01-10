@@ -81,7 +81,7 @@ void featureComputationTask(void* parameter) {
       }
       
       if (++updateCount % 50 == 0) {
-        Serial.printf("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
+        DEBUG_LOG("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
           localImuData.timestamp,
           localImuData.ax, localImuData.ay, localImuData.az,
           getPitch(), getRoll(), getStepCount());
@@ -112,7 +112,7 @@ void bleTask(void* parameter) {
           pChar->notify();
           
           if (++bleNotifyCount % 10 == 0) {
-            Serial.printf("[BLE] Sent: Steps=%u, RMS=%d\n",
+            DEBUG_LOG("[BLE] Sent: Steps=%u, RMS=%d\n",
               packet.stepCount, packet.rms);
           }
         }
@@ -144,7 +144,7 @@ void sdLoggingTask(void* parameter) {
       
       SDCardStatus status = sd_getStatus();
       if (status.packetsWritten % 1000 == 0) {
-        Serial.printf("[SD] %u packets, %u files, %u errors\n",
+        DEBUG_LOG("[SD] %u packets, %u files, %u errors\n",
           status.packetsWritten, status.filesCreated, status.writeErrors);
       }
     } else {

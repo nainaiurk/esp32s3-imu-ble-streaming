@@ -4,6 +4,14 @@
 // Device configuration
 #define DEVICE_NAME "ESP32-S3-BLE"
 
+// Debug logging
+#define DEBUG_LOG_ENABLE 0  // 0 = OFF, 1 = ON
+#if DEBUG_LOG_ENABLE
+  #define DEBUG_LOG(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
+#else
+  #define DEBUG_LOG(fmt, ...) ((void)0)
+#endif
+
 // Task timing configuration
 #define IMU_SAMPLE_RATE_HZ 50
 #define IMU_SAMPLE_PERIOD_MS (1000 / IMU_SAMPLE_RATE_HZ)
@@ -26,8 +34,8 @@
 #define ACCEL_SCALE_8G 4096.0f     // LSB/g for ±8g range
 
 // I2C configuration
-#define I2C_SDA_PIN 20
-#define I2C_SCL_PIN 19
+#define I2C_SDA_PIN 39
+#define I2C_SCL_PIN 38
 #define I2C_FREQ 400000
 #define MPU6050_ADDR 0x68
 

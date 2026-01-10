@@ -6,18 +6,11 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-// Backpressure policies for ring buffer
-typedef enum {
-  SD_BACKPRESSURE_DROP_OLDEST, // Drop oldest packet when full (explicit loss)
-  SD_BACKPRESSURE_DROP_NEWEST  // Drop newest packet when full (reject)
-} SDBackpressurePolicy;
-
-// Ring buffer stats
+// Ring buffer stats - production essentials only
 typedef struct {
   uint32_t totalEnqueued;      // Total packets queued
   uint32_t totalDequeued;      // Total packets written
-  uint32_t peakQueueDepth;     // Maximum queue depth reached
-  uint32_t droppedPackets;     // Packets dropped due to backpressure
+  uint32_t droppedPackets;     // Packets dropped (buffer full)
 } SDRingBufferStats;
 
 // SD card status structure
@@ -28,15 +21,12 @@ typedef struct {
   uint32_t filesCreated;
   uint32_t writeErrors;
   char currentFilePath[128];
-  SDRingBufferStats bufferStats;  // Ring buffer statistics
+  SDRingBufferStats bufferStats;
 } SDCardStatus;
 
-// Ring buffer queue operations
-bool sd_enqueue(const FeaturePacket* packet);           // Queue packet with backpressure
-bool sd_dequeue(FeaturePacket* packet);                // Dequeue oldest packet
-uint32_t sd_getRingBufferSize();                       // Current queue depth
-uint32_t sd_getRingBufferCapacity();                   // Max queue capacity
-void sd_setBackpressurePolicy(SDBackpressurePolicy p); // Configure backpressure behavior
+// Ring buffer queue operations (DROP_OLDEST policy: oldest packet dropped when full)
+bool sd_enqueue(const FeaturePacket* packet);  // Queue packet
+bool sd_dequeue(FeaturePacket* packet);        // Dequeue oldest packet
 
 // Core SD operations
 bool sd_init();
