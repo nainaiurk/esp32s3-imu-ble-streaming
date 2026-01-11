@@ -49,7 +49,7 @@ bool readIMUData(int16_t rawAccel[3], int16_t rawGyro[3], int16_t& rawTemp) {
   Wire.beginTransmission(MPU6050_ADDR);
   Wire.write(0x3B);  // Starting register
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU6050_ADDR, 14, (bool)true);
+  Wire.requestFrom(MPU6050_ADDR, 14, true);  // Request 14 bytes
   
   if (Wire.available() < 14) {
     return false;

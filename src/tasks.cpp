@@ -10,24 +10,15 @@
 ImuPacket imuPacket;
 FeaturePacket featurePacket;
 
-// Jitter tracking for IMU task
 static volatile uint32_t imuMinPeriodUs = UINT32_MAX;
 static volatile uint32_t imuMaxPeriodUs = 0;
 
-// IMU error tracking
 static volatile uint8_t imuErrorCount = 0;
 static volatile bool imuHealthy = true;
 #define IMU_MAX_CONSECUTIVE_ERRORS 5
 
-// BLE health is managed by connection callbacks (onConnect/onDisconnect)
-// Task simply sends when connected, idles when not
-// No error tracking needed — connection state is the only signal
-
-// Mutexes for thread-safe access
 SemaphoreHandle_t imuDataMutex;
 SemaphoreHandle_t featureDataMutex;
-
-// Event group for inter-task synchronization
 EventGroupHandle_t taskEventGroup;
 
 // ---------- IMU Sampling Task (50 Hz) ----------
@@ -43,14 +34,12 @@ void imuSamplingTask(void* parameter) {
     int16_t rawAccel[3], rawGyro[3], rawTemp;
     
     if (readIMUData(rawAccel, rawGyro, rawTemp)) {
-      // IMU read successful - reset error counter
       imuErrorCount = 0;
       if (!imuHealthy) {
         imuHealthy = true;
         DEBUG_LOG("[IMU] Recovered from error\n");
       }
       
-      // Measure actual IMU sampling jitter in microseconds
       uint32_t currentSampleTimeUs = micros();
       uint32_t actualPeriodUs = currentSampleTimeUs - lastSampleTimeUs;
       
@@ -75,7 +64,6 @@ void imuSamplingTask(void* parameter) {
         xSemaphoreGive(imuDataMutex);
       }
     } else {
-      // IMU read failed - increment error counter
       imuErrorCount++;
       
       if (imuErrorCount == 1) {
@@ -84,11 +72,9 @@ void imuSamplingTask(void* parameter) {
       }
       
       if (imuErrorCount >= IMU_MAX_CONSECUTIVE_ERRORS) {
-        // Critical failure
         imuHealthy = false;
         DEBUG_LOG("[IMU] CRITICAL: Failed %u consecutive reads - IMU may be disconnected\n", 
           imuErrorCount);
-        // Wait a bit before retrying to avoid hammering I2C bus
         vTaskDelay(pdMS_TO_TICKS(100));
       }
     }
@@ -251,21 +237,11 @@ void imuDebugTask(void* parameter) {
         const char* imuStatus = imuHealthy ? "OK" : "FAIL";
         const char* bleStatus = isBLEConnected() ? "Connected" : "Disconnected";
         
-        // Serial.printf("[SYSTEM] IMU=%s(%u) BLE=%s | Jitter=%ld µs\n", 
-        //   imuStatus, imuErrorCount, bleStatus, worstJitterUs);
-        
         // Reset for next measurement window
         imuMinPeriodUs = UINT32_MAX;
         imuMaxPeriodUs = 0;
       }
       
-      // Print real-time IMU and feature data every update (50 Hz)
-      // Serial.printf("[IMU] T:%u A:%d,%d,%d G:%d,%d,%d\n",
-      //   debugData.timestamp,
-      //   debugData.ax, debugData.ay, debugData.az,
-      //   debugData.gx, debugData.gy, debugData.gz);
-      
-      // Print real-time Feature packet
       if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(5))) {
         Serial.printf("[FEATURE] T:%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u\n",
           featurePacket.timestamp,
@@ -281,7 +257,6 @@ void imuDebugTask(void* parameter) {
   }
 }
 
-// ---------- Initialize All Tasks and Event Groups ----------
 void initTasks() {
   taskEventGroup = xEventGroupCreate();
   imuDataMutex = xSemaphoreCreateMutex();
