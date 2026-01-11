@@ -19,6 +19,10 @@ static volatile uint8_t imuErrorCount = 0;
 static volatile bool imuHealthy = true;
 #define IMU_MAX_CONSECUTIVE_ERRORS 5
 
+// BLE health is managed by connection callbacks (onConnect/onDisconnect)
+// Task simply sends when connected, idles when not
+// No error tracking needed — connection state is the only signal
+
 // Mutexes for thread-safe access
 SemaphoreHandle_t imuDataMutex;
 SemaphoreHandle_t featureDataMutex;
@@ -138,18 +142,11 @@ void bleTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
   uint32_t bleNotifyCount = 0;
-  uint32_t loopCount = 0;
 
   while (true) {
-    loopCount++;
-    
-    if (loopCount % 100 == 0) {  // Print status every 10 seconds
-      DEBUG_LOG("[BLE Task] Loop=%u Connected=%d\n", loopCount, isBLEConnected());
-    }
-    
     if (isBLEConnected()) {
       FeaturePacket packet;
-      
+
       if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(5))) {
         packet = featurePacket;
         xSemaphoreGive(featureDataMutex);
@@ -158,17 +155,12 @@ void bleTask(void* parameter) {
         if (pChar) {
           pChar->setValue((uint8_t*)&packet, sizeof(packet));
           pChar->notify();
-          
+
           if (++bleNotifyCount % 10 == 0) {
-            DEBUG_LOG("[BLE] Sent: T=%u Steps=%u RMS=%d Pitch=%.1f Roll=%.1f\n",
-              packet.timestamp, packet.stepCount, packet.rms,
-              packet.pitch / 100.0f, packet.roll / 100.0f);
+            DEBUG_LOG("[BLE] Notify T=%u Steps=%u RMS=%d\n",
+              packet.timestamp, packet.stepCount, packet.rms);
           }
-        } else {
-          DEBUG_LOG("[BLE] ERROR: pChar is NULL\n");
         }
-      } else {
-        DEBUG_LOG("[BLE] ERROR: Failed to acquire featureDataMutex\n");
       }
     }
 
@@ -236,7 +228,8 @@ void sdLoggingTask(void* parameter) {
 // ---------- IMU Debug Task (1 Hz) ----------
 void imuDebugTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(1000);  // 1 Hz
+  const TickType_t xFrequency = pdMS_TO_TICKS(20);  // 50 Hz - real-time orientation
+  uint32_t statsCount = 0;
 
   while (true) {
     ImuPacket debugData;
@@ -245,27 +238,42 @@ void imuDebugTask(void* parameter) {
       debugData = imuPacket;
       xSemaphoreGive(imuDataMutex);
       
-      int32_t minPeriodUs = imuMinPeriodUs;
-      int32_t maxPeriodUs = imuMaxPeriodUs;
+      // Print SYSTEM stats every 50 updates (once per second)
+      if (statsCount++ % 50 == 0) {
+        int32_t minPeriodUs = imuMinPeriodUs;
+        int32_t maxPeriodUs = imuMaxPeriodUs;
+        
+        const int32_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
+        int32_t maxJitterUs = maxPeriodUs - expectedPeriodUs;
+        int32_t minJitterUs = minPeriodUs - expectedPeriodUs;
+        int32_t worstJitterUs = max(abs(maxJitterUs), abs(minJitterUs));
+        
+        const char* imuStatus = imuHealthy ? "OK" : "FAIL";
+        const char* bleStatus = isBLEConnected() ? "Connected" : "Disconnected";
+        
+        // Serial.printf("[SYSTEM] IMU=%s(%u) BLE=%s | Jitter=%ld µs\n", 
+        //   imuStatus, imuErrorCount, bleStatus, worstJitterUs);
+        
+        // Reset for next measurement window
+        imuMinPeriodUs = UINT32_MAX;
+        imuMaxPeriodUs = 0;
+      }
       
-      const int32_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
-      int32_t maxJitterUs = maxPeriodUs - expectedPeriodUs;
-      int32_t minJitterUs = minPeriodUs - expectedPeriodUs;
-      int32_t worstJitterUs = max(abs(maxJitterUs), abs(minJitterUs));
+      // Print real-time IMU and feature data every update (50 Hz)
+      // Serial.printf("[IMU] T:%u A:%d,%d,%d G:%d,%d,%d\n",
+      //   debugData.timestamp,
+      //   debugData.ax, debugData.ay, debugData.az,
+      //   debugData.gx, debugData.gy, debugData.gz);
       
-      const char* healthStatus = imuHealthy ? "OK" : "FAIL";
-      Serial.printf("[IMU] Status=%s Errors=%u | Period min=%ld max=%ld | worst jitter=%ld µs\n", 
-        healthStatus, imuErrorCount, minPeriodUs, maxPeriodUs, worstJitterUs);
-      
-      // Reset for next measurement window
-      imuMinPeriodUs = UINT32_MAX;
-      imuMaxPeriodUs = 0;
-      
-      if (DEBUG_LOG_ENABLE) {
-        DEBUG_LOG("T:%u A:%d,%d,%d | Pitch:%.1f° Roll:%.1f° Steps:%u\n",
-          debugData.timestamp,
-          debugData.ax, debugData.ay, debugData.az,
-          getPitch(), getRoll(), getStepCount());
+      // Print real-time Feature packet
+      if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(5))) {
+        Serial.printf("[FEATURE] T:%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u\n",
+          featurePacket.timestamp,
+          featurePacket.rms,
+          featurePacket.pitch / 100.0f,
+          featurePacket.roll / 100.0f,
+          featurePacket.stepCount);
+        xSemaphoreGive(featureDataMutex);
       }
     }
 
@@ -288,5 +296,5 @@ void initTasks() {
   xTaskCreatePinnedToCore(featureComputationTask, "Feature_Task", 8192, NULL, 2, NULL, 1);
   xTaskCreatePinnedToCore(bleTask, "BLE_Task", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(sdLoggingTask, "SD_Task", 8192, NULL, 0, NULL, 0);
-  xTaskCreatePinnedToCore(imuDebugTask, "Debug_Task", 2048, NULL, 0, NULL, 0);
+  xTaskCreatePinnedToCore(imuDebugTask, "Debug_Task", 8192, NULL, 0, NULL, 0);
 }

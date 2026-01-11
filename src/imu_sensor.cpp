@@ -32,7 +32,7 @@ void initMPU6050() {
   // Configure accel
   Wire.beginTransmission(MPU6050_ADDR);
   Wire.write(0x1C);  // ACCEL_CONFIG register
-  Wire.write(0x10);  // AFS_SEL=2 (±8g)
+  Wire.write(0x08);  // AFS_SEL=1 (±4g) - improved precision for step detection
   Wire.endTransmission();
   
   // Set DLPF to 20Hz bandwidth
@@ -49,7 +49,7 @@ bool readIMUData(int16_t rawAccel[3], int16_t rawGyro[3], int16_t& rawTemp) {
   Wire.beginTransmission(MPU6050_ADDR);
   Wire.write(0x3B);  // Starting register
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU6050_ADDR, 14, true);
+  Wire.requestFrom(MPU6050_ADDR, 14, (bool)true);
   
   if (Wire.available() < 14) {
     return false;

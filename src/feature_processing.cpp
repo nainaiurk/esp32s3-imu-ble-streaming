@@ -82,9 +82,9 @@ uint32_t getStepCount() {
 
 void updateOrientation(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz) {
   // Convert accelerometer to g's
-  float ax_g = ax / ACCEL_SCALE_8G;
-  float ay_g = ay / ACCEL_SCALE_8G;
-  float az_g = az / ACCEL_SCALE_8G;
+  float ax_g = ax / ACCEL_SCALE_4G;
+  float ay_g = ay / ACCEL_SCALE_4G;
+  float az_g = az / ACCEL_SCALE_4G;
   
   // Calculate pitch and roll from accelerometer (in degrees)
   float accelPitch = atan2(ay_g, sqrt(ax_g*ax_g + az_g*az_g)) * 180.0f / PI;

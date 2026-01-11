@@ -175,12 +175,13 @@ void sd_closeFile() {
   }
 }
 
-/* Get SD status */
+// -------Get SD status ---------
 SDCardStatus sd_getStatus() {
-  // Update buffer stats before returning
-  sdStatus.bufferStats.totalEnqueued = sdRingTotalEnqueued;
-  sdStatus.bufferStats.totalDequeued = sdRingTotalDequeued;
-  sdStatus.bufferStats.droppedPackets = sdRingDroppedPackets;
+  // Update buffer stats from ring buffer module
+  SDRingBufferStats ringStats = sd_getRingBufferStats();
+  sdStatus.bufferStats.totalEnqueued = ringStats.totalEnqueued;
+  sdStatus.bufferStats.totalDequeued = ringStats.totalDequeued;
+  sdStatus.bufferStats.droppedPackets = ringStats.droppedPackets;
   return sdStatus;
 }
 
@@ -201,12 +202,7 @@ uint64_t sd_getAvailableSpace() {
   return cardSize - estimatedUsed;
 }
 
-// -------------------Get Total Packet Count-------------------
-uint32_t sd_getPacketCount() {
-  return sdStatus.packetsWritten;
-}
-
-/* Diagnostic - print essential status only */
+// -------------------Diagnostic - print essential status only----------
 void sd_printStatus() {
   SDCardStatus status = sd_getStatus();
 
