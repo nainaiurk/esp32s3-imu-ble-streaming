@@ -14,6 +14,11 @@ FeaturePacket featurePacket;
 static volatile uint32_t imuMinPeriodUs = UINT32_MAX;
 static volatile uint32_t imuMaxPeriodUs = 0;
 
+// IMU error tracking
+static volatile uint8_t imuErrorCount = 0;
+static volatile bool imuHealthy = true;
+#define IMU_MAX_CONSECUTIVE_ERRORS 5
+
 // Mutexes for thread-safe access
 SemaphoreHandle_t imuDataMutex;
 SemaphoreHandle_t featureDataMutex;
@@ -34,6 +39,13 @@ void imuSamplingTask(void* parameter) {
     int16_t rawAccel[3], rawGyro[3], rawTemp;
     
     if (readIMUData(rawAccel, rawGyro, rawTemp)) {
+      // IMU read successful - reset error counter
+      imuErrorCount = 0;
+      if (!imuHealthy) {
+        imuHealthy = true;
+        DEBUG_LOG("[IMU] Recovered from error\n");
+      }
+      
       // Measure actual IMU sampling jitter in microseconds
       uint32_t currentSampleTimeUs = micros();
       uint32_t actualPeriodUs = currentSampleTimeUs - lastSampleTimeUs;
@@ -57,6 +69,23 @@ void imuSamplingTask(void* parameter) {
         imuPacket.gz = rawGyro[2];
         imuPacket.temp = rawTemp;
         xSemaphoreGive(imuDataMutex);
+      }
+    } else {
+      // IMU read failed - increment error counter
+      imuErrorCount++;
+      
+      if (imuErrorCount == 1) {
+        DEBUG_LOG("[IMU] ERROR: Read failed (attempt %u/%u)\n", 
+          imuErrorCount, IMU_MAX_CONSECUTIVE_ERRORS);
+      }
+      
+      if (imuErrorCount >= IMU_MAX_CONSECUTIVE_ERRORS) {
+        // Critical failure
+        imuHealthy = false;
+        DEBUG_LOG("[IMU] CRITICAL: Failed %u consecutive reads - IMU may be disconnected\n", 
+          imuErrorCount);
+        // Wait a bit before retrying to avoid hammering I2C bus
+        vTaskDelay(pdMS_TO_TICKS(100));
       }
     }
   }
@@ -224,8 +253,9 @@ void imuDebugTask(void* parameter) {
       int32_t minJitterUs = minPeriodUs - expectedPeriodUs;
       int32_t worstJitterUs = max(abs(maxJitterUs), abs(minJitterUs));
       
-      Serial.printf("[IMU] Period min=%ld max=%ld | worst jitter=%ld µs\n", 
-        minPeriodUs, maxPeriodUs, worstJitterUs);
+      const char* healthStatus = imuHealthy ? "OK" : "FAIL";
+      Serial.printf("[IMU] Status=%s Errors=%u | Period min=%ld max=%ld | worst jitter=%ld µs\n", 
+        healthStatus, imuErrorCount, minPeriodUs, maxPeriodUs, worstJitterUs);
       
       // Reset for next measurement window
       imuMinPeriodUs = UINT32_MAX;
