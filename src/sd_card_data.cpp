@@ -60,7 +60,7 @@ static bool sd_ringBuffer_init() {
   return true;
 }
 
-/* Enqueue packet - DROP_OLDEST when full */
+// -------------Enqueue packet - DROP_OLDEST when full-------------
 bool sd_enqueue(const FeaturePacket* packet) {
   if (!sdRingBufferMutex) return false;
 
@@ -82,7 +82,7 @@ bool sd_enqueue(const FeaturePacket* packet) {
   return true;
 }
 
-/* Dequeue oldest packet */
+// -------------Dequeue oldest packet ------------
 bool sd_dequeue(FeaturePacket* packet) {
   if (!sdRingBufferMutex) return false;
 
@@ -100,6 +100,19 @@ bool sd_dequeue(FeaturePacket* packet) {
 
   xSemaphoreGive(sdRingBufferMutex);
   return true;
+}
+
+// --------------Clear all packets from ring buffer -----------
+void sd_clearBuffer() {
+  if (!sdRingBufferMutex) return;
+
+  if (xSemaphoreTake(sdRingBufferMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+
+  sdRingHead = 0;
+  sdRingTail = 0;
+  sdRingSize = 0;
+
+  xSemaphoreGive(sdRingBufferMutex);
 }
 
 void sd_getFileName(char* buffer, size_t bufferSize) {

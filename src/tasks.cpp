@@ -150,32 +150,56 @@ void bleTask(void* parameter) {
 // ---------- SD Card Logging Task (buffered writes) ----------
 void sdLoggingTask(void* parameter) {
   FeaturePacket logPacket;
-
-  if (!sd_init()) {
-    vTaskDelete(NULL);
-    return;
-  }
-
-  xEventGroupSetBits(taskEventGroup, SD_READY_BIT);
+  bool sdInitialized = false;
+  uint32_t lastInitAttempt = 0;
+  const uint32_t INIT_RETRY_MS = 1000;  // Retry every 1 second when disconnected
 
   while (true) {
-    if (sd_dequeue(&logPacket)) {
-      if (!sd_writePacket(&logPacket)) {
-        if (!sd_isReady()) {
-          xEventGroupClearBits(taskEventGroup, SD_READY_BIT);
+    // Try to initialize/reinitialize SD card only if disconnected
+    if (!sdInitialized) {
+      uint32_t now = millis();
+      if (now - lastInitAttempt >= INIT_RETRY_MS) {
+        if (sd_init()) {
+          sd_clearBuffer();  // Discard stale packets from buffer
+          sdInitialized = true;
+          xEventGroupSetBits(taskEventGroup, SD_READY_BIT);
+          DEBUG_LOG("[SD] Initialized successfully\n");
         }
-      }
-      
-      SDCardStatus status = sd_getStatus();
-      if (status.packetsWritten % 1000 == 0) {
-        DEBUG_LOG("[SD] %u packets, %u files, %u errors\n",
-          status.packetsWritten, status.filesCreated, status.writeErrors);
-      }
-    } else {
-      if (sd_isReady()) {
-        sd_flush();
+        lastInitAttempt = now;
       }
     }
+    
+    // Process queued packets if SD is ready
+    if (sdInitialized) {
+      if (sd_dequeue(&logPacket)) {
+        if (!sd_writePacket(&logPacket)) {
+          // Write failed - check if SD was removed
+          if (!sd_isReady()) {
+            sd_closeFile();
+            sdInitialized = false;
+            xEventGroupClearBits(taskEventGroup, SD_READY_BIT);
+            DEBUG_LOG("[SD] Removed or became unavailable, waiting for reinsertion\n");
+          }
+        }
+        
+        SDCardStatus status = sd_getStatus();
+        if (status.packetsWritten % 1000 == 0) {
+          DEBUG_LOG("[SD] %u packets, %u files, %u errors\n",
+            status.packetsWritten, status.filesCreated, status.writeErrors);
+        }
+      } else {
+        // Idle: flush buffer and check SD health
+        if (sd_isReady()) {
+          sd_flush();
+        } else {
+          sd_closeFile();
+          sdInitialized = false;
+          xEventGroupClearBits(taskEventGroup, SD_READY_BIT);
+          DEBUG_LOG("[SD] Card lost during idle, waiting for reinsertion\n");
+        }
+      }
+    }
+    
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

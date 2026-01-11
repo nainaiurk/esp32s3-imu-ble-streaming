@@ -27,6 +27,7 @@ typedef struct {
 // Ring buffer queue operations (DROP_OLDEST policy: oldest packet dropped when full)
 bool sd_enqueue(const FeaturePacket* packet);  // Queue packet
 bool sd_dequeue(FeaturePacket* packet);        // Dequeue oldest packet
+void sd_clearBuffer();                         // Clear all buffered packets
 
 // Core SD operations
 bool sd_init();
