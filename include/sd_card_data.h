@@ -2,16 +2,10 @@
 #define SD_CARD_DATA_H
 
 #include "data_types.h"
+#include "sd_card_ring_buffer.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-
-// Ring buffer stats - production essentials only
-typedef struct {
-  uint32_t totalEnqueued;      // Total packets queued
-  uint32_t totalDequeued;      // Total packets written
-  uint32_t droppedPackets;     // Packets dropped (buffer full)
-} SDRingBufferStats;
 
 // SD card status structure
 typedef struct {
@@ -24,10 +18,10 @@ typedef struct {
   SDRingBufferStats bufferStats;
 } SDCardStatus;
 
-// Ring buffer queue operations (DROP_OLDEST policy: oldest packet dropped when full)
-bool sd_enqueue(const FeaturePacket* packet);  // Queue packet
-bool sd_dequeue(FeaturePacket* packet);        // Dequeue oldest packet
-void sd_clearBuffer();                         // Clear all buffered packets
+// Ring buffer queue operations (imported from sd_card_ring_buffer.h)
+// bool sd_enqueue(const FeaturePacket* packet);  // Queue packet
+// bool sd_dequeue(FeaturePacket* packet);        // Dequeue oldest packet
+// void sd_clearBuffer();                         // Clear all buffered packets
 
 // Core SD operations
 bool sd_init();
