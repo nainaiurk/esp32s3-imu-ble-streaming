@@ -1,6 +1,8 @@
 #include "sd_card_data.h"
 #include "sd_card_ring_buffer.h"
 #include "config.h"
+#include "rtc_time.h"
+#include "tasks.h"
 #include <Arduino.h>
 #include <SD_MMC.h>
 #include <freertos/FreeRTOS.h>
@@ -23,8 +25,8 @@ static SDCardStatus sdStatus = {
 };
 
 static uint32_t sdPacketsInCurrentFile = 0;
-static const uint32_t MAX_PACKETS_PER_FILE = 60000;  // ~10 min at 50 Hz
 static uint8_t sdWriteErrorCount = 0;
+static uint32_t sdPacketsDropped = 0;  // Track dropped packets
 
 // -------------- SD File Operations ---------------
 
@@ -33,16 +35,8 @@ void sd_getFileName(char* buffer, size_t bufferSize) {
     return;
   }
 
-  time_t now = time(NULL);
-  struct tm* timeinfo = localtime(&now);
-  
-  snprintf(buffer, bufferSize, "/sdcard/imu_log_%04d%02d%02d_%02d%02d%02d.bin",
-    timeinfo->tm_year + 1900,
-    timeinfo->tm_mon + 1,
-    timeinfo->tm_mday,
-    timeinfo->tm_hour,
-    timeinfo->tm_min,
-    timeinfo->tm_sec);
+  time_t now = getRTCTimestamp();
+  snprintf(buffer, bufferSize, "/sdcard/imu_log_%lu.bin", now);
 }
 
 // ------------------Create New Log File-----------------
@@ -87,6 +81,10 @@ bool sd_init() {
   sdStatus.packetsWritten = 0;
   sdStatus.writeErrors = 0;
   sdWriteErrorCount = 0;
+  
+  // Reset sample index when SD card is initialized
+  extern volatile uint32_t sampleIndex;
+  sampleIndex = 1;  // Start at 1 on SD initialization
 
   return true;
 }
@@ -99,6 +97,9 @@ bool sd_isReady() {
 // ---------------Write Feature Packet to SD-----------------
 bool sd_writePacket(const FeaturePacket* packet) {
   if (!packet || !sd_isReady()) {
+    if (packet) {
+      sdPacketsDropped++;
+    }
     return false;
   }
 
@@ -108,6 +109,7 @@ bool sd_writePacket(const FeaturePacket* packet) {
   if (bytesWritten != 1) {
     sdWriteErrorCount++;
     sdStatus.writeErrors++;
+    sdPacketsDropped++;
     DEBUG_LOG("[SD] Write error #%u\n", sdStatus.writeErrors);
 
     // Check if too many consecutive errors
@@ -125,8 +127,9 @@ bool sd_writePacket(const FeaturePacket* packet) {
   sdStatus.packetsWritten++;
   sdPacketsInCurrentFile++;
 
-  // Check if file rotation is needed (only explicit flush trigger)
+  // Check if file rotation is needed
   if (sdPacketsInCurrentFile >= MAX_PACKETS_PER_FILE) {
+    DEBUG_LOG("[SD] Rotating file: %u packets written\n", sdPacketsInCurrentFile);
     if (!sd_rotateFile()) {
       sdStatus.isReady = false;
       return false;
@@ -139,12 +142,16 @@ bool sd_writePacket(const FeaturePacket* packet) {
 // -------------------Rotate to New Log File------------------
 bool sd_rotateFile() {
   if (sdLogFile) {
-    // Flush and close current file
+    // Flush multiple times to ensure all data is written
     fflush(sdLogFile);
+    fflush(sdLogFile);  // Double flush to be safe
     fclose(sdLogFile);
     sdLogFile = NULL;
     DEBUG_LOG("[SD] Closed log file: %u packets written\n", sdPacketsInCurrentFile);
   }
+
+  // Small delay to allow filesystem to settle
+  vTaskDelay(pdMS_TO_TICKS(10));
 
   // Create new file
   if (!sd_createNewFile()) {
@@ -209,6 +216,7 @@ void sd_printStatus() {
   Serial.println("\n===== SD Card Status =====");
   Serial.printf("Ready:            %s\n", status.isReady ? "Yes" : "No");
   Serial.printf("Packets Written:  %u\n", status.packetsWritten);
+  Serial.printf("Packets Dropped:  %u\n", sdPacketsDropped);
   Serial.printf("Write Errors:     %u\n", status.writeErrors);
 
   Serial.println("===== Ring Buffer =====");

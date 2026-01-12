@@ -26,6 +26,10 @@
 // Step detection parameters
 #define STEP_THRESHOLD 10000      // Threshold for dynamic acceleration magnitude
 #define MIN_STEP_INTERVAL_MS 250  // Minimum time between steps (walking)
+
+// SD Card configuration
+#define MAX_PACKETS_PER_FILE 500  // 10 seconds at 50 Hz
+
 #define GRAVITY_ALPHA 0.98f       // Low-pass filter coefficient for gravity
 
 // Orientation parameters
@@ -33,11 +37,15 @@
 #define GYRO_SCALE_500DPS 65.5f    // LSB/°/s for ±500°/s range
 #define ACCEL_SCALE_4G 8192.0f     // LSB/g for ±4g range (improved precision for step detection)
 
-// I2C configuration
+// I2C configuration (IMU on Wire1)
 #define I2C_SDA_PIN 38
 #define I2C_SCL_PIN 39
 #define I2C_FREQ 400000
 #define MPU6050_ADDR 0x68
+
+// RTC I2C configuration (DS3231 on Wire)
+#define RTC_SDA_PIN 8
+#define RTC_SCL_PIN 9
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"

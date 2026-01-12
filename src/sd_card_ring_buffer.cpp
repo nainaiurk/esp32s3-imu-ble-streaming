@@ -4,7 +4,7 @@
 #include <string.h>
 
 // ----------- Ring Buffer Configuration -----------
-#define SD_RING_BUFFER_SIZE 512  // 512 packets = ~10 sec buffer at 50 Hz
+#define SD_RING_BUFFER_SIZE 2048  // 2048 packets = ~40 sec buffer at 50 Hz (increased to prevent packet loss)
 
 // Static allocation - avoids heap fragmentation for long-lived systems
 static FeaturePacket sdRingBufferStorage[SD_RING_BUFFER_SIZE];

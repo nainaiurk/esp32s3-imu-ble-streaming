@@ -3,8 +3,10 @@
 #include "imu_sensor.h"
 #include "feature_processing.h"
 #include "ble_service.h"
+#include "rtc_time.h"
 #include "sd_card_data.h"
 #include <Arduino.h>
+#include <esp_timer.h>
 
 // Global data packets
 ImuPacket imuPacket;
@@ -19,6 +21,11 @@ static volatile uint8_t imuErrorCount = 0;
 static volatile bool imuHealthy = true;
 #define IMU_MAX_CONSECUTIVE_ERRORS 5
 
+// Sample counters - single monotonic counter shared by IMU and Feature tasks
+volatile uint32_t sampleIndex = 0;  // Starts at 0, incremented to 1 on first use
+static uint32_t featureComputedCount = 0;  // Track computed features
+static uint32_t featureEnqueuedCount = 0;  // Track enqueued features
+
 // Mutexes for thread-safe access
 SemaphoreHandle_t imuDataMutex;
 SemaphoreHandle_t featureDataMutex;
@@ -30,8 +37,8 @@ EventGroupHandle_t taskEventGroup;
 void imuSamplingTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
-  uint32_t lastSampleTimeUs = micros();
-  const uint32_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
+  int64_t lastSampleTimeUs = esp_timer_get_time();
+  const int64_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
 
   while (true) {
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -46,9 +53,9 @@ void imuSamplingTask(void* parameter) {
         DEBUG_LOG("[IMU] Recovered from error\n");
       }
       
-      // Measure actual IMU sampling jitter in microseconds
-      uint32_t currentSampleTimeUs = micros();
-      uint32_t actualPeriodUs = currentSampleTimeUs - lastSampleTimeUs;
+      // Measure actual IMU sampling jitter using esp_timer (microsecond precision)
+      int64_t currentSampleTimeUs = esp_timer_get_time();
+      int64_t actualPeriodUs = currentSampleTimeUs - lastSampleTimeUs;
       
       if (actualPeriodUs < imuMinPeriodUs) {
         imuMinPeriodUs = actualPeriodUs;
@@ -60,7 +67,14 @@ void imuSamplingTask(void* parameter) {
       lastSampleTimeUs = currentSampleTimeUs;
       
       if (xSemaphoreTake(imuDataMutex, pdMS_TO_TICKS(5))) {
-        imuPacket.timestamp = millis();
+        time_t rtcSecs = getRTCTimestamp();
+        
+        imuPacket.sampleIndex = sampleIndex++;
+        // Reset sample index to 1 every MAX_PACKETS_PER_FILE
+        if (sampleIndex > MAX_PACKETS_PER_FILE) {
+          sampleIndex = 1;
+        }
+        imuPacket.timestamp = rtcSecs;
         imuPacket.ax = rawAccel[0];
         imuPacket.ay = rawAccel[1];
         imuPacket.az = rawAccel[2];
@@ -104,12 +118,15 @@ void featureComputationTask(void* parameter) {
       localImuData = imuPacket;
       xSemaphoreGive(imuDataMutex);
       
+      featureComputedCount++;
+      
       updateRMS(localImuData.ax, localImuData.ay, localImuData.az);
       detectStep(localImuData.ax, localImuData.ay, localImuData.az);
       updateOrientation(localImuData.ax, localImuData.ay, localImuData.az,
                        localImuData.gx, localImuData.gy, localImuData.gz);
       
       if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(10))) {
+        featurePacket.sampleIndex = sampleIndex;  // Use same index as IMU (already incremented)
         featurePacket.timestamp = localImuData.timestamp;
         featurePacket.ax = localImuData.ax;
         featurePacket.ay = localImuData.ay;
@@ -126,6 +143,7 @@ void featureComputationTask(void* parameter) {
         xSemaphoreGive(featureDataMutex);
         
         sd_enqueue(&snapshot);
+        featureEnqueuedCount++;
       }
     }
 
@@ -226,6 +244,7 @@ void imuDebugTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(20);  // 50 Hz - real-time orientation
   uint32_t statsCount = 0;
+  uint32_t sdStatusCount = 0;  // Separate counter for SD status printing
 
   while (true) {
     ImuPacket debugData;
@@ -250,6 +269,20 @@ void imuDebugTask(void* parameter) {
         // Serial.printf("[SYSTEM] IMU=%s(%u) BLE=%s | Jitter=%ld µs\n", 
         //   imuStatus, imuErrorCount, bleStatus, worstJitterUs);
         
+        // Print SD card status every 5 seconds
+        if (++sdStatusCount >= 5) {
+          sd_printStatus();
+          
+          // Show feature task metrics
+          if (featureComputedCount != featureEnqueuedCount) {
+            Serial.printf("[FEATURE] Computed:%u Enqueued:%u Missed:%u\n", 
+              featureComputedCount, featureEnqueuedCount, 
+              featureComputedCount - featureEnqueuedCount);
+          }
+          
+          sdStatusCount = 0;
+        }
+        
         // Reset for next measurement window
         imuMinPeriodUs = UINT32_MAX;
         imuMaxPeriodUs = 0;
@@ -261,10 +294,14 @@ void imuDebugTask(void* parameter) {
       //   debugData.ax, debugData.ay, debugData.az,
       //   debugData.gx, debugData.gy, debugData.gz);
       
-      // Print real-time Feature packet
+      // Print real-time Feature packet with RTC timestamp
       if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(5))) {
-        Serial.printf("[FEATURE] T:%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u\n",
-          featurePacket.timestamp,
+        char timeStr[13];
+        getTimeString(timeStr, sizeof(timeStr));
+        
+        Serial.printf("[%s] Index=%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u\n",
+          timeStr,
+          featurePacket.sampleIndex,
           featurePacket.rms,
           featurePacket.pitch / 100.0f,
           featurePacket.roll / 100.0f,
