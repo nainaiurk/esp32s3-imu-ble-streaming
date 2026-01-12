@@ -110,3 +110,14 @@ float getPitch() {
 float getRoll() {
   return roll;
 }
+
+bool detectPowerSavingMotion(int16_t ax, int16_t ay, int16_t az) {
+  // Calculate acceleration magnitude squared to avoid floating point sqrt
+  int32_t accelSq = (int32_t)ax * ax + (int32_t)ay * ay + (int32_t)az * az;
+  
+  // Calculate magnitude in LSB units
+  uint32_t accelMag = (uint32_t)sqrt((float)accelSq);
+  
+  // Return true if motion detected (magnitude exceeds threshold)
+  return (accelMag > MOTION_THRESHOLD);
+}

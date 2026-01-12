@@ -27,6 +27,14 @@
 #define STEP_THRESHOLD 10000      // Threshold for dynamic acceleration magnitude
 #define MIN_STEP_INTERVAL_MS 250  // Minimum time between steps (walking)
 
+// Power-saving mode configuration
+#define POWER_SAVE_ENABLE 1              // 0 = disabled, 1 = enabled
+#define MOTION_THRESHOLD 20000           // Accel magnitude threshold for motion detection (LSB)
+#define MOTION_INACTIVE_TIME_MS 5000     // Time without motion before entering low-power mode (5 seconds)
+#define LOW_POWER_IMU_RATE_HZ 10         // Low-power IMU sampling rate (10 Hz = 100ms)
+#define LOW_POWER_FEATURE_RATE_HZ 10     // Low-power feature update rate (10 Hz = 100ms)
+#define LOW_POWER_BLE_RATE_HZ 2          // Low-power BLE notify rate (2 Hz = 500ms)
+
 // SD Card configuration
 #define MAX_PACKETS_PER_FILE 500  // 10 seconds at 50 Hz
 
