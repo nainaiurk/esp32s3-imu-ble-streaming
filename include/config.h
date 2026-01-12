@@ -17,14 +17,14 @@
 #define IMU_SAMPLE_PERIOD_MS (1000 / IMU_SAMPLE_RATE_HZ)
 #define FEATURE_UPDATE_RATE_HZ 50
 #define FEATURE_UPDATE_PERIOD_MS (1000 / FEATURE_UPDATE_RATE_HZ)
-#define BLE_NOTIFY_RATE_HZ 10
+#define BLE_NOTIFY_RATE_HZ 50
 #define BLE_NOTIFY_PERIOD_MS (1000 / BLE_NOTIFY_RATE_HZ)
 
 // RMS configuration
 #define RMS_WINDOW 25
 
 // Step detection parameters
-#define STEP_THRESHOLD 12000      // Threshold for dynamic acceleration magnitude
+#define STEP_THRESHOLD 10000      // Threshold for dynamic acceleration magnitude
 #define MIN_STEP_INTERVAL_MS 250  // Minimum time between steps (walking)
 #define GRAVITY_ALPHA 0.98f       // Low-pass filter coefficient for gravity
 
@@ -34,8 +34,8 @@
 #define ACCEL_SCALE_4G 8192.0f     // LSB/g for ±4g range (improved precision for step detection)
 
 // I2C configuration
-#define I2C_SDA_PIN 39
-#define I2C_SCL_PIN 38
+#define I2C_SDA_PIN 38
+#define I2C_SCL_PIN 39
 #define I2C_FREQ 400000
 #define MPU6050_ADDR 0x68
 
