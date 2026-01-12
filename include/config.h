@@ -27,6 +27,12 @@
 #define STEP_THRESHOLD 10000      // Threshold for dynamic acceleration magnitude
 #define MIN_STEP_INTERVAL_MS 250  // Minimum time between steps (walking)
 
+// Power Management configuration
+#define MOTION_THRESHOLD 20000           // LSB (acceleration magnitude threshold)
+#define MOTION_INACTIVE_TIME_MS 5000     // Milliseconds before entering low-power mode
+#define LOW_POWER_IMU_RATE_HZ 10         // Hz (low-power mode IMU sampling)
+#define LOW_POWER_FEATURE_RATE_HZ 10     // Hz (low-power mode feature update)
+
 // SD Card configuration
 #define MAX_PACKETS_PER_FILE 500  // 10 seconds at 50 Hz
 

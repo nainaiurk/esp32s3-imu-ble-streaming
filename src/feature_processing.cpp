@@ -110,3 +110,35 @@ float getPitch() {
 float getRoll() {
   return roll;
 }
+
+// ---------- Power Saving Motion Detection ----------
+static uint32_t lastMotionTimeMs = 0;
+static bool isLowPowerMode = false;
+
+bool detectPowerSavingMotion(int16_t ax, int16_t ay, int16_t az) {
+  // Calculate acceleration magnitude
+  int32_t magSq = (int32_t)ax*ax + (int32_t)ay*ay + (int32_t)az*az;
+  float magnitude = sqrt((float)magSq);
+  
+  uint32_t nowMs = millis();
+  
+  // Check if motion exceeds threshold
+  if (magnitude > MOTION_THRESHOLD) {
+    lastMotionTimeMs = nowMs;
+    isLowPowerMode = false;
+    return true;  // Motion detected
+  }
+  
+  // Check if inactive for too long
+  if ((nowMs - lastMotionTimeMs) >= MOTION_INACTIVE_TIME_MS) {
+    isLowPowerMode = true;
+    return false;  // Low power mode
+  }
+  
+  return !isLowPowerMode;  // Return current state
+}
+
+bool isInLowPowerMode() {
+  return isLowPowerMode;
+}
+

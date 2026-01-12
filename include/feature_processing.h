@@ -11,5 +11,6 @@ void updateOrientation(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t g
 float getPitch();
 float getRoll();
 bool detectPowerSavingMotion(int16_t ax, int16_t ay, int16_t az);
+bool isInLowPowerMode();
 
 #endif

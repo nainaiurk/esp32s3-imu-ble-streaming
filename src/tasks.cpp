@@ -33,14 +33,18 @@ SemaphoreHandle_t featureDataMutex;
 // Event group for inter-task synchronization
 EventGroupHandle_t taskEventGroup;
 
-// ---------- IMU Sampling Task (50 Hz) ----------
+// ---------- IMU Sampling Task (50 Hz normal / 10 Hz low-power) ----------
 void imuSamplingTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
+  TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
   int64_t lastSampleTimeUs = esp_timer_get_time();
   const int64_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
 
   while (true) {
+    // Dynamically adjust frequency based on power mode
+    xFrequency = isInLowPowerMode() ? 
+                 pdMS_TO_TICKS(1000 / LOW_POWER_IMU_RATE_HZ) : 
+                 pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
     
     int16_t rawAccel[3], rawGyro[3], rawTemp;
@@ -105,13 +109,17 @@ void imuSamplingTask(void* parameter) {
   }
 }
 
-// ---------- Feature Computation Task (50 Hz) ----------
+// ---------- Feature Computation Task (50 Hz normal / 10 Hz low-power) ----------
 void featureComputationTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(FEATURE_UPDATE_PERIOD_MS);
+  TickType_t xFrequency = pdMS_TO_TICKS(FEATURE_UPDATE_PERIOD_MS);
   uint16_t updateCount = 0;
 
   while (true) {
+    // Dynamically adjust frequency based on power mode
+    xFrequency = isInLowPowerMode() ? 
+                 pdMS_TO_TICKS(1000 / LOW_POWER_FEATURE_RATE_HZ) : 
+                 pdMS_TO_TICKS(FEATURE_UPDATE_PERIOD_MS);
     ImuPacket localImuData;
     
     if (xSemaphoreTake(imuDataMutex, pdMS_TO_TICKS(10))) {
@@ -124,6 +132,9 @@ void featureComputationTask(void* parameter) {
       detectStep(localImuData.ax, localImuData.ay, localImuData.az);
       updateOrientation(localImuData.ax, localImuData.ay, localImuData.az,
                        localImuData.gx, localImuData.gy, localImuData.gz);
+      
+      // Check motion for power saving mode
+      detectPowerSavingMotion(localImuData.ax, localImuData.ay, localImuData.az);
       
       if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(10))) {
         featurePacket.sampleIndex = sampleIndex;  // Use same index as IMU (already incremented)
@@ -151,13 +162,17 @@ void featureComputationTask(void* parameter) {
   }
 }
 
-// ---------- BLE Task (10 Hz) ----------
+// ---------- BLE Task (50 Hz normal / 10 Hz low-power) ----------
 void bleTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
+  TickType_t xFrequency = pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
   uint32_t bleNotifyCount = 0;
 
   while (true) {
+    // Dynamically adjust frequency based on power mode
+    xFrequency = isInLowPowerMode() ? 
+                 pdMS_TO_TICKS(1000 / LOW_POWER_FEATURE_RATE_HZ) : 
+                 pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
     if (isBLEConnected()) {
       FeaturePacket packet;
 
@@ -299,13 +314,14 @@ void imuDebugTask(void* parameter) {
         char timeStr[13];
         getTimeString(timeStr, sizeof(timeStr));
         
-        Serial.printf("[%s] Index=%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u\n",
+        Serial.printf("[%s] Index=%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u Mode=%s\n",
           timeStr,
           featurePacket.sampleIndex,
           featurePacket.rms,
           featurePacket.pitch / 100.0f,
           featurePacket.roll / 100.0f,
-          featurePacket.stepCount);
+          featurePacket.stepCount,
+          isInLowPowerMode() ? "LOW-POWER" : "NORMAL");
         xSemaphoreGive(featureDataMutex);
       }
     }
