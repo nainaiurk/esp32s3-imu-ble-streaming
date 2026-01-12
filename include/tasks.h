@@ -10,11 +10,9 @@
 // Event Group bits for task synchronization
 #define BLE_CONNECTED_BIT    (1 << 0)  // BLE device connected
 #define SD_READY_BIT         (1 << 1)  // SD card ready
-#define POWER_SAVE_MODE_BIT  (1 << 2)  // Power-saving mode active
 
 // Global data packets
 extern ImuPacket imuPacket;
-extern volatile bool isLowPowerMode;  // Power-saving mode flag
 extern FeaturePacket featurePacket;
 
 // Mutexes for thread-safe access

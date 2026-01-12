@@ -7,7 +7,6 @@
 #include "sd_card_data.h"
 #include <Arduino.h>
 #include <esp_timer.h>
-#include <cmath>
 
 // Global data packets
 ImuPacket imuPacket;
@@ -31,25 +30,17 @@ static uint32_t featureEnqueuedCount = 0;  // Track enqueued features
 SemaphoreHandle_t imuDataMutex;
 SemaphoreHandle_t featureDataMutex;
 
-// Power-saving mode tracking
-volatile bool isLowPowerMode = false;
-static uint32_t lastMotionTimeMs = 0;
-
 // Event group for inter-task synchronization
 EventGroupHandle_t taskEventGroup;
 
-// ---------- IMU Sampling Task (50 Hz or LOW_POWER_IMU_RATE_HZ Hz) ----------
+// ---------- IMU Sampling Task (50 Hz) ----------
 void imuSamplingTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(IMU_SAMPLE_PERIOD_MS);
   int64_t lastSampleTimeUs = esp_timer_get_time();
   const int64_t expectedPeriodUs = IMU_SAMPLE_PERIOD_MS * 1000;
 
   while (true) {
-    // Determine current frequency based on power mode
-    uint32_t currentImuPeriod = isLowPowerMode ? 
-      (1000 / LOW_POWER_IMU_RATE_HZ) : IMU_SAMPLE_PERIOD_MS;
-    const TickType_t xFrequency = pdMS_TO_TICKS(currentImuPeriod);
-
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
     
     int16_t rawAccel[3], rawGyro[3], rawTemp;
@@ -114,17 +105,13 @@ void imuSamplingTask(void* parameter) {
   }
 }
 
-// ---------- Feature Computation Task (50 Hz or LOW_POWER_FEATURE_RATE_HZ Hz) ----------
+// ---------- Feature Computation Task (50 Hz) ----------
 void featureComputationTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(FEATURE_UPDATE_PERIOD_MS);
   uint16_t updateCount = 0;
 
   while (true) {
-    // Determine current frequency based on power mode
-    uint32_t currentFeaturePeriod = isLowPowerMode ? 
-      (1000 / LOW_POWER_FEATURE_RATE_HZ) : FEATURE_UPDATE_PERIOD_MS;
-    const TickType_t xFrequency = pdMS_TO_TICKS(currentFeaturePeriod);
-
     ImuPacket localImuData;
     
     if (xSemaphoreTake(imuDataMutex, pdMS_TO_TICKS(10))) {
@@ -137,33 +124,6 @@ void featureComputationTask(void* parameter) {
       detectStep(localImuData.ax, localImuData.ay, localImuData.az);
       updateOrientation(localImuData.ax, localImuData.ay, localImuData.az,
                        localImuData.gx, localImuData.gy, localImuData.gz);
-      
-      // Power-saving mode: motion detection and state transitions
-      if (POWER_SAVE_ENABLE) {
-        bool motionDetected = detectPowerSavingMotion(localImuData.ax, localImuData.ay, localImuData.az);
-        
-        if (motionDetected) {
-          lastMotionTimeMs = millis();
-          if (isLowPowerMode) {
-            isLowPowerMode = false;
-            // Calculate acceleration magnitude for debug message
-            int32_t accelSq = (int32_t)localImuData.ax * localImuData.ax +
-                              (int32_t)localImuData.ay * localImuData.ay +
-                              (int32_t)localImuData.az * localImuData.az;
-            uint32_t accelMag = (uint32_t)sqrt((float)accelSq);
-            DEBUG_LOG("[POWER] Exiting low-power mode (accel=%u LSB)\n", accelMag);
-            xEventGroupSetBits(taskEventGroup, POWER_SAVE_MODE_BIT);
-          }
-        } else {
-          // Check for inactivity timeout
-          uint32_t inactiveTimeMs = millis() - lastMotionTimeMs;
-          if (!isLowPowerMode && inactiveTimeMs > MOTION_INACTIVE_TIME_MS) {
-            isLowPowerMode = true;
-            DEBUG_LOG("[POWER] Entering low-power mode (inactive for %u ms)\n", inactiveTimeMs);
-            xEventGroupClearBits(taskEventGroup, POWER_SAVE_MODE_BIT);
-          }
-        }
-      }
       
       if (xSemaphoreTake(featureDataMutex, pdMS_TO_TICKS(10))) {
         featurePacket.sampleIndex = sampleIndex;  // Use same index as IMU (already incremented)
@@ -191,17 +151,13 @@ void featureComputationTask(void* parameter) {
   }
 }
 
-// ---------- BLE Task (50 Hz or LOW_POWER_BLE_RATE_HZ Hz) ----------
+// ---------- BLE Task (10 Hz) ----------
 void bleTask(void* parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(BLE_NOTIFY_PERIOD_MS);
   uint32_t bleNotifyCount = 0;
 
   while (true) {
-    // Determine current frequency based on power mode
-    uint32_t currentBlePeriod = isLowPowerMode ? 
-      (1000 / LOW_POWER_BLE_RATE_HZ) : BLE_NOTIFY_PERIOD_MS;
-    const TickType_t xFrequency = pdMS_TO_TICKS(currentBlePeriod);
-
     if (isBLEConnected()) {
       FeaturePacket packet;
 
@@ -215,9 +171,8 @@ void bleTask(void* parameter) {
           pChar->notify();
 
           if (++bleNotifyCount % 10 == 0) {
-            DEBUG_LOG("[BLE] Notify T=%u Steps=%u RMS=%d Mode=%s\n",
-              packet.timestamp, packet.stepCount, packet.rms,
-              isLowPowerMode ? "LOW" : "NORMAL");
+            DEBUG_LOG("[BLE] Notify T=%u Steps=%u RMS=%d\n",
+              packet.timestamp, packet.stepCount, packet.rms);
           }
         }
       }
@@ -314,10 +269,6 @@ void imuDebugTask(void* parameter) {
         // Serial.printf("[SYSTEM] IMU=%s(%u) BLE=%s | Jitter=%ld µs\n", 
         //   imuStatus, imuErrorCount, bleStatus, worstJitterUs);
         
-        // Print power mode status every second
-        const char* powerModeStr = isLowPowerMode ? "POWER-SAVE" : "NORMAL";
-        Serial.printf("[POWER-MODE] %s\n", powerModeStr);
-        
         // Print SD card status every 5 seconds
         if (++sdStatusCount >= 5) {
           sd_printStatus();
@@ -348,15 +299,13 @@ void imuDebugTask(void* parameter) {
         char timeStr[13];
         getTimeString(timeStr, sizeof(timeStr));
         
-        const char* modeStr = isLowPowerMode ? "POWER-SAVE" : "NORMAL";
-        Serial.printf("[%s] Index=%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u Mode=%s\n",
+        Serial.printf("[%s] Index=%u RMS=%d Pitch:%.1f° Roll:%.1f° Steps:%u\n",
           timeStr,
           featurePacket.sampleIndex,
           featurePacket.rms,
           featurePacket.pitch / 100.0f,
           featurePacket.roll / 100.0f,
-          featurePacket.stepCount,
-          modeStr);
+          featurePacket.stepCount);
         xSemaphoreGive(featureDataMutex);
       }
     }
