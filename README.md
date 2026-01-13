@@ -31,7 +31,7 @@ A concurrent embedded system for motion data acquisition with 50 Hz IMU sampling
 
 ### Architecture
 
-![ESP32-S3 Architecture Diagram](figure/architechture.png)
+![ESP32-S3 Architecture Diagram](figure/architecture.png)
 
 ### Workflow
 
