@@ -11,9 +11,10 @@ A concurrent embedded system for motion data acquisition with 50 Hz IMU sampling
 - **5 FreeRTOS Tasks** (dual-core: Core 1 real-time, Core 0 I/O)
 - **50 Hz IMU sampling** with < 150 µs jitter
 - **Real-time features**: RMS, step detection, orientation tracking
-- **BLE streaming**: 50 Hz (normal) / 2 Hz (low-power)
+- **BLE streaming**: 50 Hz (normal) / 10 Hz (low-power)
 - **SD card logging**: Ring buffer (2048 packets, 40 sec @ 50 Hz)
 - **Power saving**: Motion detection with reduced sample rates in low-power mode
+- **Unit tests**: Pending (framework ready, test cases in development)
 
 ---
 
@@ -30,55 +31,28 @@ A concurrent embedded system for motion data acquisition with 50 Hz IMU sampling
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  CORE 1 (Real-Time)          │  CORE 0 (I/O)               │
-│  ─────────────────────────────────────────────────────────  │
-│  IMU Task (50 Hz, P3)        │  BLE Task (50Hz, P1)        │
-│    ↓                         │    ↑                         │
-│  Feature Task (50 Hz, P2)    │  SD Card Task (P0)          │
-│    ├─ RMS                    │  Ring Buffer                 │
-│    ├─ Steps                  │    (2048 packets)            │
-│    ├─ Orientation            │  Debug Task (P0)             │
-│    └─ Motion Detection       │                              │
-└──────────────────┬──────────────────┬──────────────────────┘
-                   │ ImuPacket (22B)  │ FeaturePacket (30B)
-                   │ Mutex Protected  │ EventGroup Signaling
-```
+![ESP32-S3 Architecture Diagram](figure/architechture.png)
 
 ### Workflow
 
-```
-MPU6050 Sensor (20ms)
-    │
-    ▼
-IMU Task (Core 1, P3)
-├─ Read I2C data
-├─ Get RTC timestamp
-└─ Create ImuPacket (22B)
-    │
-    ▼ [Mutex Protected]
-Feature Task (Core 1, P2)
-├─ Calculate RMS
-├─ Detect Steps
-├─ Compute Orientation
-├─ Check Motion Detection
-└─ Create FeaturePacket (30B)
-    │
-    ▼ [Ring Buffer - 2048 packets]
-    │
-    ├─────────────────┬────────────────┐
-    │                 │                │
-    ▼                 ▼                ▼
-BLE Task (P1)    Power Mode Check   SD Task (P0)
-├─ Send @ 50 Hz  ├─ Normal Mode     ├─ Queue packets
-└─ (2 Hz low-pwr)└─ Low-Power Mode  ├─ Write to SD
-                                     ├─ 500 pkts/file
-                                     └─ Auto-rotate
-    │
-    ▼
-User App (Phone/PC) + SD Card Storage
-```
+![ESP32-S3 Workflow Diagram](figure/workflow.png)
+
+**Data Flow Architecture**:
+- **BLE (HP:50Hz / LP:10Hz)**: Reads **latest FeaturePacket directly** via mutex (no buffering, always current)
+- **SD**: Uses **ring buffer** for reliable queuing (2048 packet buffer, DROP_OLDEST policy)
+- **Feature task**: Writes to both paths simultaneously (mutex for BLE, non-blocking enqueue for SD)
+- **Power Mode**: HP (High Power) 50 Hz normal / LP (Low Power) 10 Hz - affects IMU, Feature, and BLE sampling rates dynamically
+
+**Backpressure Flow**:
+- Feature task **non-blocking enqueue**: Never stalls, uses zero-wait semaphore
+- If ring buffer full (2048 packets): **DROP_OLDEST** policy discards newest incoming
+- SD task **non-blocking dequeue**: Pulls packets asynchronously at I/O speed
+- When SD offline: Ring buffer holds ~40 sec of data, new packets queued normally
+- When SD recovers: Flushes buffered packets, no data loss
+
+
+
+
 
 ---
 
@@ -161,10 +135,6 @@ Calculates acceleration magnitude; if below 20K LSB for 5 seconds → enters low
 - If `accel_mag > 20000 LSB`: Update motion timestamp, stay in Normal mode
 - If `accel_mag ≤ 20000 LSB` for > 5 seconds: Switch to Low-Power mode
 
-**Mode Transitions** (currently only affects IMU and Feature sampling):
-- **Normal**: 50 Hz IMU + 50 Hz Features + 50 Hz BLE
-- **Low-Power**: 10 Hz IMU + 10 Hz Features + 50 Hz BLE (BLE stays at 50 Hz for responsiveness)
-
 ```cpp
 accel_mag = sqrt(ax² + ay² + az²);
 if (accel_mag > 20000) {
@@ -182,9 +152,9 @@ if (accel_mag > 20000) {
 ### 5. BLE Wireless Streaming
 
 **Protocol**: NimBLE 5.0, 30-byte FeaturePacket notifications  
-**Update Rate**: 50 Hz (constant, not changed by power mode)  
+**Update Rate**: 50 Hz (normal) / 10 Hz (low-power mode)  
 **Data per packet**: Index, timestamp, accel/gyro XYZ (raw), RMS, pitch, roll, step count  
-**Bandwidth**: 1.2 KB/sec
+**Bandwidth**: 1.2 KB/sec (normal mode)
 
 **Packet Format** (30 bytes total):
 ```
@@ -200,7 +170,7 @@ struct FeaturePacket {
 };
 ```
 
-**Note**: While power mode reduces IMU sampling (50 Hz → 10 Hz) and feature computation (50 Hz → 10 Hz), BLE notify rate remains at 50 Hz to maintain wireless responsiveness when connected.
+
 
 ### 6. SD Card Logging - Ring Buffer with DROP_OLDEST Policy
 
@@ -208,26 +178,13 @@ struct FeaturePacket {
 **Write Policy**: Asynchronous ring buffer with automatic DROP_OLDEST when full  
 **File Rotation**: Every 500 packets (~10 sec @ 50 Hz) for manageable file sizes
 
-**Ring Buffer Flow**:
-```
-Feature Task → sd_enqueue() → Ring Buffer (2048 slots)
-                                    ↓
-                              SD Task → sd_dequeue()
-                                    ↓
-                              Write to File
-                                    ↓
-                          Rotate after 500 packets
-```
+**Backpressure Handling**: If ring buffer fills (2048 packets), DROP_OLDEST discards newest incoming. Dropped packet count tracked for diagnostics.
 
-**Backpressure Handling**:
-- If ring buffer fills (2048 packets queued): **DROP_OLDEST** discards newest incoming packets
-- Dropped packet count tracked for diagnostics
+**Reliability**: 
 - Error recovery: Marks SD as "not ready" after 5 consecutive write failures
 - Automatic retry: SD task retries initialization every 1 second if removed
-
-**File Storage**: Unix-style paths (`/sdcard/imu_log_<timestamp>.bin`), binary format (30 bytes/packet)  
-**Data Loss Prevention**: 2048-packet buffer prevents data loss during transient SD issues  
-**Each CSV contains**: Exactly 500 sequential packets per file with no gaps
+- File storage: Unix-style paths (`/sdcard/imu_log_<timestamp>.bin`), binary format (30 bytes/packet)
+- Each file contains exactly 500 sequential packets with no gaps
 
 ---
 
@@ -237,9 +194,11 @@ Feature Task → sd_enqueue() → Ring Buffer (2048 slots)
 |------|------|----------|------|---------|
 | IMU | 1 | 3 | 50/10 Hz | Read sensor via I2C |
 | Features | 1 | 2 | 50/10 Hz | Process RMS, steps, orientation, motion |
-| BLE | 0 | 1 | 50/2 Hz | Send packets wirelessly |
+| BLE | 0 | 1 | 50/10 Hz | Send packets wirelessly |
 | SD | 0 | 0 | Async | Batch write to SD |
-| Debug | 0 | 0 | 1 Hz | Serial stats |
+| Debug | 0 | 0 | 1 Hz | Serial stats (optional) |
+
+**Note**: Debug task is **optional** for production. To disable: comment out Debug task creation and `Serial.begin(115200)` in `setup()`. Core functionality remains unaffected.
 
 **Sync**: Mutexes (non-blocking), Event Groups, Ring Buffer  
 **Timing**: 20ms cycle, ~7-8ms used, ~12-13ms sleep, <150µs jitter
@@ -261,7 +220,7 @@ POWER_SAVE_ENABLE               1       // 1=enabled
 MOTION_THRESHOLD            20000       // LSB (acceleration)
 MOTION_INACTIVE_TIME_MS      5000       // milliseconds
 LOW_POWER_IMU_RATE_HZ          10       // Hz (low-power mode)
-LOW_POWER_BLE_RATE_HZ           2       // Hz (low-power mode)
+LOW_POWER_BLE_RATE_HZ          10       // Hz (low-power mode)
 
 // Sensor Calibration
 ACCEL_SCALE_4G            8192.0        // LSB/g
@@ -353,9 +312,8 @@ Example output:
 
 ### Extract & Convert SD Logs
 
-1. Copy all `.bin` files from the SD card to the `bin_files/` folder (already exists in repo)
-2. Run the conversion script:
-
+1. Copy all `.bin` files from the SD card to the `bin_to_csv/bin_files/` folder (already exists in repo)
+2. Run the conversion script inside 'bin_to_csv' folder
 ```bash
 python bin_to_csv.py
 # Reads all .bin files from bin_files/ folder
