@@ -19,10 +19,10 @@ from pathlib import Path
 
 # ------------- CONFIGURATION ----------
 # Folder containing .bin files
-INPUT_FOLDER = "bin_files"
+INPUT_FOLDER = "bin_to_csv/bin_files"
 
 # Folder where CSV files will be saved (will be created if doesn't exist)
-OUTPUT_FOLDER = "csv_files"
+OUTPUT_FOLDER = "bin_to_csv/csv_files"
 
 def convert_bin_to_csv(bin_file, csv_file=None):
     """Convert a single binary file to CSV"""

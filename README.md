@@ -4,6 +4,8 @@ A concurrent embedded system for motion data acquisition with 50 Hz IMU sampling
 
 **Key Features**: High-frequency sensor fusion, real-time signal processing, wireless telemetry, persistent storage, power optimization
 
+**📹 Demo**: [Watch on YouTube](https://youtu.be/0sC028-XWAc)
+
 ---
 
 ## Quick Overview
