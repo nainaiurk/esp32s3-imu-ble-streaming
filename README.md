@@ -192,18 +192,22 @@ struct FeaturePacket {
 
 ## Task Architecture
 
-| Task | Core | Priority | Rate | Purpose |
-|------|------|----------|------|---------|
-| IMU | 1 | 3 | 50/10 Hz | Read sensor via I2C |
-| Features | 1 | 2 | 50/10 Hz | Process RMS, steps, orientation, motion |
-| BLE | 0 | 1 | 50/10 Hz | Send packets wirelessly |
-| SD | 0 | 0 | Async | Batch write to SD |
-| Debug | 0 | 0 | 1 Hz | Serial stats (optional) |
+| Task | Core | Priority | Rate | Stack | Purpose |
+|------|------|----------|------|-------|---------|
+| IMU | 1 | 3 | 50/10 Hz | 4 KB | Read sensor via I2C |
+| Features | 1 | 2 | 50/10 Hz | 8 KB | Process RMS, steps, orientation, motion |
+| BLE | 0 | 1 | 50/10 Hz | 4 KB | Send packets wirelessly |
+| SD | 0 | 0 | Async | 8 KB | Batch write to SD |
+| Debug | 0 | 0 | 1 Hz | 8 KB | Serial stats (optional) |
 
 **Note**: Debug task is **optional** for production. To disable: comment out Debug task creation and `Serial.begin(115200)` in `setup()`. Core functionality remains unaffected.
 
-**Sync**: Mutexes (non-blocking), Event Groups, Ring Buffer  
-**Timing**: 20ms cycle, ~7-8ms used, ~12-13ms sleep, <150µs jitter
+**Synchronization**:
+- **Mutexes** (2): Protect shared ImuPacket and FeaturePacket data structures with non-blocking access (`xSemaphoreTake(..., 0)` to prevent stalling)
+- **Event Groups** (1): Track BLE connection state (BLE_CONNECTED_BIT) for advertising control
+- **Ring Buffer**: 2048-packet circular buffer for SD logging with DROP_OLDEST overflow policy
+
+**Timing**: 20ms cycle (measured), <150µs jitter (measured via `esp_timer_get_time()`)
 
 All settings in [include/config.h](include/config.h):
 
