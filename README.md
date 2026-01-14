@@ -176,17 +176,53 @@ struct FeaturePacket {
 
 ### 6. SD Card Logging - Ring Buffer with DROP_OLDEST Policy
 
-**Buffer**: 2048 packets (static allocation) = ~40 seconds @ 50 Hz  
+**Buffer Structure**: Static circular buffer, 2048 packets (61 KB RAM) = ~40 seconds @ 50 Hz  
 **Write Policy**: Asynchronous ring buffer with automatic DROP_OLDEST when full  
 **File Rotation**: Every 500 packets (~10 sec @ 50 Hz) for manageable file sizes
 
-**Backpressure Handling**: If ring buffer fills (2048 packets), DROP_OLDEST discards newest incoming. Dropped packet count tracked for diagnostics.
+**Ring Buffer Data Structure**:
+```cpp
+struct RingBuffer {
+  FeaturePacket packets[2048];  // Circular array
+  uint16_t write_head;          // Next write position (0-2047)
+  uint16_t read_head;           // Next read position (0-2047)
+  uint16_t count;               // Current packets stored (0-2048)
+  uint32_t dropped;             // Cumulative dropped packets
+  SemaphoreHandle_t mutex;      // Thread-safe access
+};
+```
+
+**Enqueue Operation** (Feature Task → Buffer):
+1. Feature task calls `sd_enqueue(&packet)` (non-blocking, 0 ms timeout)
+2. Acquires mutex with zero-wait (`xSemaphoreTake(..., 0)`)—if locked, **skips enqueue** (no stalling)
+3. If `count < 2048`: Places packet at `write_head`, increments `write_head = (write_head + 1) % 2048`
+4. If `count == 2048` (buffer full): **DROP_OLDEST**—overwrites oldest packet at `read_head`, increments `dropped` counter
+5. Releases mutex
+
+**Dequeue Operation** (SD Task → Write to File):
+1. SD task calls `sd_dequeue(&packet)` asynchronously (triggered by 500-packet batches)
+2. Acquires mutex, reads packet at `read_head`, increments `read_head = (read_head + 1) % 2048`
+3. Decrements `count`
+4. Writes packet to SD file (30 bytes per packet)
+5. Releases mutex
+
+**Backpressure Handling**: 
+- If ring buffer fills (count == 2048): DROP_OLDEST **discards oldest incoming packets**
+- Dropped packet count tracked (`dropped` field) for diagnostics
+- Feature task **never blocks**—enqueue always completes in microseconds
+
+**Buffer Initialization**:
+- Ring buffer **cleared on SD card initialization** (`sd_clearBuffer()`)
+- If SD card present at startup: cleared immediately during `sd_init()`
+- If SD card inserted later: cleared when `sd_init()` succeeds after insertion
+- This ensures clean state for each SD session
 
 **Reliability**: 
 - Error recovery: Marks SD as "not ready" after 5 consecutive write failures
 - Automatic retry: SD task retries initialization every 1 second if removed
 - File storage: Unix-style paths (`/sdcard/imu_log_<timestamp>.bin`), binary format (30 bytes/packet)
 - Each file contains exactly 500 sequential packets with no gaps
+- Thread-safe: Mutex protects concurrent access (Feature task writes, SD task reads simultaneously)
 
 ---
 
@@ -204,7 +240,11 @@ struct FeaturePacket {
 
 **Synchronization**:
 - **Mutexes** (2): Protect shared ImuPacket and FeaturePacket data structures with non-blocking access (`xSemaphoreTake(..., 0)` to prevent stalling)
-- **Event Groups** (1): Track BLE connection state (BLE_CONNECTED_BIT) for advertising control
+- **Event Groups** (1): Track SD card readiness (SD_READY_BIT)
+  - **Set** when `sd_init()` succeeds (SD ready for logging)
+  - **Cleared** when SD card is removed or unavailable
+  - **Current Implementation**: Created and managed by SD task, but not actively used by other tasks for blocking/waiting—other tasks check SD state via `sd_isReady()` or `sd_getStatus()` directly
+  - **Design Intent**: Future enhancement to synchronize dependent tasks (e.g., pause logging if SD becomes unavailable)
 - **Ring Buffer**: 2048-packet circular buffer for SD logging with DROP_OLDEST overflow policy
 
 **Timing**: 20ms cycle (measured), <150µs jitter (measured via `esp_timer_get_time()`)
